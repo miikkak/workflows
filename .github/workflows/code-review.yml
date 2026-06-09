@@ -5,6 +5,7 @@ on: # yamllint disable-line rule:truthy
   pull_request:
     types: [opened, ready_for_review]
     branches: [main]
+  workflow_dispatch:
   workflow_call:
 
 permissions:
