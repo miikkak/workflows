@@ -96,7 +96,8 @@ jobs:
               issue.title.includes('Security vulnerabilities detected')
             );
 
-            const runUrl = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
+            const repoBase = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}`;
+            const runUrl = `${repoBase}/actions/runs/${context.runId}`;
             const body = [
               '## 🔒 Security Vulnerabilities Detected (Filesystem Scan)',
               '',
@@ -277,7 +278,8 @@ jobs:
               issue.title.includes('Security vulnerabilities detected')
             );
 
-            const containerRunUrl = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
+            const containerRepoBase = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}`;
+            const containerRunUrl = `${containerRepoBase}/actions/runs/${context.runId}`;
             const body = [
               '## 🔒 Security Vulnerabilities Detected (Container Image)',
               '',
