@@ -161,26 +161,28 @@ jobs:
                 title: 'chore: update pre-commit hook versions',
                 head: branchName,
                 base: 'main',
-                body: `## Update Pre-commit Hooks
-
-This PR updates the pre-commit hook versions to their latest releases.
-
-### Changes
-
-\`\`\`
-${updateOutput}
-\`\`\`
-
-### Testing
-
-The pre-commit hooks will be automatically tested when this PR is created. To test locally:
-
-\`\`\`bash
-pre-commit run --all-files
-\`\`\`
-
----
-*This PR was automatically created by the pre-commit-updates workflow.*`
+                body: [
+                  '## Update Pre-commit Hooks',
+                  '',
+                  'This PR updates the pre-commit hook versions to their latest releases.',
+                  '',
+                  '### Changes',
+                  '',
+                  '```',
+                  updateOutput,
+                  '```',
+                  '',
+                  '### Testing',
+                  '',
+                  'The pre-commit hooks will be automatically tested when this PR is created. To test locally:',
+                  '',
+                  '```bash',
+                  'pre-commit run --all-files',
+                  '```',
+                  '',
+                  '---',
+                  '*This PR was automatically created by the pre-commit-updates workflow.*',
+                ].join('\n')
               });
 
               console.log(`✅ Created PR #${pr.number}`);
@@ -203,41 +205,43 @@ pre-commit run --all-files
                 owner: context.repo.owner,
                 repo: context.repo.repo,
                 title: '⬆️ Pre-commit hook updates available',
-                body: `## Pre-commit Hook Updates Available
-
-Updates are available for pre-commit hooks, but automatic PR creation failed.
-
-### Updates Available
-
-\`\`\`
-${updateOutput}
-\`\`\`
-
-### Manual Update Instructions
-
-1. Update hooks locally:
-   \`\`\`bash
-   pre-commit autoupdate
-   \`\`\`
-
-2. Test the updates:
-   \`\`\`bash
-   pre-commit run --all-files
-   \`\`\`
-
-3. Commit and push:
-   \`\`\`bash
-   git checkout -b chore/update-pre-commit-hooks
-   git add .pre-commit-config.yaml
-   git commit -m "chore: update pre-commit hook versions"
-   git push origin chore/update-pre-commit-hooks
-   \`\`\`
-
-4. Create a PR and add the \`release:patch\` label.
-
----
-*This issue was automatically created by the pre-commit-updates workflow.*
-*Error: ${error.message}*`,
+                body: [
+                  '## Pre-commit Hook Updates Available',
+                  '',
+                  'Updates are available for pre-commit hooks, but automatic PR creation failed.',
+                  '',
+                  '### Updates Available',
+                  '',
+                  '```',
+                  updateOutput,
+                  '```',
+                  '',
+                  '### Manual Update Instructions',
+                  '',
+                  '1. Update hooks locally:',
+                  '   ```bash',
+                  '   pre-commit autoupdate',
+                  '   ```',
+                  '',
+                  '2. Test the updates:',
+                  '   ```bash',
+                  '   pre-commit run --all-files',
+                  '   ```',
+                  '',
+                  '3. Commit and push:',
+                  '   ```bash',
+                  '   git checkout -b chore/update-pre-commit-hooks',
+                  '   git add .pre-commit-config.yaml',
+                  '   git commit -m "chore: update pre-commit hook versions"',
+                  '   git push origin chore/update-pre-commit-hooks',
+                  '   ```',
+                  '',
+                  '4. Create a PR and add the `release:patch` label.',
+                  '',
+                  '---',
+                  '*This issue was automatically created by the pre-commit-updates workflow.*',
+                  `*Error: ${error.message}*`,
+                ].join('\n'),
                 labels: ['dependencies', 'automated', 'enhancement']
               });
             }
