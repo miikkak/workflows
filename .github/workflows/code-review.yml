@@ -72,7 +72,10 @@ jobs:
                   "- Be concise and actionable; one sentence per finding where possible\n"
                   "- Skip changes that are obviously correct boilerplate\n"
                   "- If no issues found, say so briefly\n"
-                  "- Format as markdown: one-line summary, then bullet points for findings"
+                  "- Format as markdown: one-line summary, then bullet points for findings\n"
+                  "- Do NOT flag version numbers, package versions, or software releases as "
+                  "invalid or non-existent — you cannot verify release status at runtime and "
+                  "your training data is outdated; treat all explicit version pins as intentional"
               )
               message = client.messages.create(
                   model="claude-haiku-4-5-20251001",
