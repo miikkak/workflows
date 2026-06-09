@@ -53,6 +53,21 @@ jobs:
           fetch-depth: 0
           token: ${{ github.token }}
 
+      - name: Configure validators
+        run: |
+          # Only write VALIDATE_*=true — never false.
+          # Super-linter v8+ rejects mixing include (true) and exclude (false) modes.
+          # Unmentioned validators simply don't run when any VALIDATE_* is set to true.
+          {
+            [[ '${{ inputs.validate-bash }}' != 'false' ]] && \
+              printf 'VALIDATE_BASH=true\nVALIDATE_SHELL_SHFMT=true\nBASH_EXEC_IGNORE_LIBRARIES=true\n'
+            [[ '${{ inputs.validate-yaml }}' != 'false' ]] && echo 'VALIDATE_YAML=true'
+            [[ '${{ inputs.validate-markdown }}' != 'false' ]] && echo 'VALIDATE_MARKDOWN=true'
+            [[ '${{ inputs.validate-github-actions }}' != 'false' ]] && echo 'VALIDATE_GITHUB_ACTIONS=true'
+            [[ '${{ inputs.validate-json }}' == 'true' ]] && echo 'VALIDATE_JSON=true'
+            echo "SHELL_SHFMT_OPTS=${{ inputs.shell-shfmt-opts || '-i 2 -ci' }}"
+          } >> "$GITHUB_ENV"
+
       - name: Super-Linter
         uses: super-linter/super-linter@v8.6.0
         env:
@@ -60,18 +75,5 @@ jobs:
           LINTER_RULES_PATH: .
           VALIDATE_ALL_CODEBASE: true
           DEFAULT_BRANCH: main
-          # Bash/shell
-          BASH_EXEC_IGNORE_LIBRARIES: ${{ inputs.validate-bash == true || inputs.validate-bash == '' }}
-          VALIDATE_BASH: ${{ inputs.validate-bash != false }}
-          VALIDATE_SHELL_SHFMT: ${{ inputs.validate-bash != false }}
-          SHELL_SHFMT_OPTS: ${{ inputs.shell-shfmt-opts || '-i 2 -ci' }}
-          # JSON
-          VALIDATE_JSON: ${{ inputs.validate-json == true }}
-          # YAML
           YAML_LINTER_RULES: .yamllint
-          VALIDATE_YAML: ${{ inputs.validate-yaml != false }}
-          # Markdown
           MARKDOWN_LINTER_RULES: .markdownlint.json
-          VALIDATE_MARKDOWN: ${{ inputs.validate-markdown != false }}
-          # GitHub Actions
-          VALIDATE_GITHUB_ACTIONS: ${{ inputs.validate-github-actions != false }}
