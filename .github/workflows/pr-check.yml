@@ -55,15 +55,19 @@ jobs:
           echo "MERGE_BASE=${MERGE_BASE}" >> "$GITHUB_ENV"
           echo "HEAD_SHA=${HEAD}" >> "$GITHUB_ENV"
 
+      - name: Compute tools cache key
+        run: |
+          hadolint_part=""
+          [[ "${INSTALL_HADOLINT}" == "true" ]] && hadolint_part="-hadolint-${HADOLINT_VERSION}"
+          echo "TOOLS_CACHE_KEY=tools-shellcheck-${SHELLCHECK_VERSION}${hadolint_part}-${{ runner.os }}" \
+            >> "$GITHUB_ENV"
+
       - name: Cache tool binaries
         id: cache-tools
         uses: actions/cache@v5
         with:
           path: ~/.cache/tools
-          key: >-
-            tools-shellcheck-${{ env.SHELLCHECK_VERSION }}
-            ${{ env.INSTALL_HADOLINT == 'true' && format('-hadolint-{0}', env.HADOLINT_VERSION) || '' }}
-            -${{ runner.os }}
+          key: ${{ env.TOOLS_CACHE_KEY }}
 
       - name: Download shellcheck and hadolint
         if: steps.cache-tools.outputs.cache-hit != 'true'
@@ -80,11 +84,12 @@ jobs:
           install -m 0755 "/tmp/shellcheck-${SHELLCHECK_VERSION}/shellcheck" ~/.cache/tools/shellcheck
 
           if [[ "${INSTALL_HADOLINT}" == "true" ]]; then
+            HADOLINT_BASE="https://github.com/hadolint/hadolint/releases/download/${HADOLINT_VERSION}"
             curl -fsSL --retry 3 --retry-delay 5 \
-              "https://github.com/hadolint/hadolint/releases/download/${HADOLINT_VERSION}/hadolint-Linux-x86_64" \
+              "${HADOLINT_BASE}/hadolint-Linux-x86_64" \
               -o ~/.cache/tools/hadolint-Linux-x86_64
             curl -fsSL --retry 3 --retry-delay 5 \
-              "https://github.com/hadolint/hadolint/releases/download/${HADOLINT_VERSION}/hadolint-Linux-x86_64.sha256" \
+              "${HADOLINT_BASE}/hadolint-Linux-x86_64.sha256" \
               -o /tmp/hadolint-Linux-x86_64.sha256
             (cd ~/.cache/tools && sha256sum -c /tmp/hadolint-Linux-x86_64.sha256)
             mv ~/.cache/tools/hadolint-Linux-x86_64 ~/.cache/tools/hadolint
