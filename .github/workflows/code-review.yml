@@ -89,19 +89,19 @@ jobs:
               )
               return message.content[0].text
 
-          def post_review(body):
+          def post_review(body, event):
               token = os.environ['GH_TOKEN']
               repo = os.environ['REPO']
               pr_number = os.environ['PR_NUMBER']
               url = f"https://api.github.com/repos/{repo}/pulls/{pr_number}/reviews"
-              payload = json.dumps({"body": body, "event": "COMMENT"}).encode()
+              payload = json.dumps({"body": body, "event": event}).encode()
               req = urllib.request.Request(url, data=payload, method='POST')
               req.add_header('Authorization', f'Bearer {token}')
               req.add_header('Accept', 'application/vnd.github+json')
               req.add_header('Content-Type', 'application/json')
               req.add_header('X-GitHub-Api-Version', '2022-11-28')
               with urllib.request.urlopen(req) as resp:
-                  print(f"Posted review: HTTP {resp.status}")
+                  print(f"Posted review ({event}): HTTP {resp.status}")
 
           if not os.environ.get('BASE_SHA') or not os.environ.get('HEAD_SHA'):
               print("No PR context (workflow_dispatch without PR?), skipping review")
@@ -113,5 +113,7 @@ jobs:
               sys.exit(0)
 
           review_text = review(diff)
-          post_review(f"## Claude Code Review\n\n{review_text}")
+          has_issues = "no issues found" not in review_text.lower()
+          event = "REQUEST_CHANGES" if has_issues else "COMMENT"
+          post_review(f"## Claude Code Review\n\n{review_text}", event)
           PYEOF
