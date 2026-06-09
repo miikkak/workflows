@@ -1,0 +1,243 @@
+---
+name: Pre-commit Hook Updates
+
+on: # yamllint disable-line rule:truthy
+  schedule:
+    # Run every Monday at 09:30 UTC
+    - cron: "30 9 * * 1"
+  workflow_dispatch:
+  workflow_call:
+    inputs:
+      python-version:
+        description: Python version for pre-commit
+        type: string
+        default: "3.14"
+      install-hadolint:
+        description: Install hadolint before running pre-commit (needed for repos with Dockerfiles)
+        type: boolean
+        default: false
+
+concurrency:
+  group: precommit-updates
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  issues: write
+  pull-requests: write
+
+jobs:
+  check-updates:
+    name: Check Pre-commit Hook Updates
+    runs-on: ubuntu-slim
+    timeout-minutes: 10
+    env:
+      HADOLINT_VERSION: v2.12.0
+      PYTHON_VERSION: ${{ inputs.python-version || '3.14' }}
+      INSTALL_HADOLINT: ${{ inputs.install-hadolint == true && 'true' || 'false' }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+        with:
+          token: ${{ github.token }}
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "${{ env.PYTHON_VERSION }}"
+
+      - name: Cache pre-commit environments
+        uses: actions/cache@v5
+        with:
+          path: ~/.cache/pre-commit
+          key: pre-commit-${{ hashFiles('.pre-commit-config.yaml') }}
+          restore-keys: |
+            pre-commit-
+
+      - name: Install hadolint
+        if: env.INSTALL_HADOLINT == 'true'
+        run: |
+          curl -fsSL --retry 3 --retry-delay 5 \
+            "https://github.com/hadolint/hadolint/releases/download/${HADOLINT_VERSION}/hadolint-Linux-x86_64" \
+            -o /tmp/hadolint-Linux-x86_64
+          curl -fsSL --retry 3 --retry-delay 5 \
+            "https://github.com/hadolint/hadolint/releases/download/${HADOLINT_VERSION}/hadolint-Linux-x86_64.sha256" \
+            -o /tmp/hadolint-Linux-x86_64.sha256
+          (cd /tmp && sha256sum -c hadolint-Linux-x86_64.sha256)
+          sudo install -m 0755 /tmp/hadolint-Linux-x86_64 /usr/local/bin/hadolint
+          hadolint --version
+
+      - name: Install pre-commit
+        run: |
+          pip install -r requirements.txt
+          pre-commit --version
+
+      - name: Check for hook updates
+        id: check
+        run: |
+          echo "Checking for pre-commit hook updates..."
+
+          pre-commit autoupdate > update-output.txt 2>&1 || true
+
+          if grep -qi "updating" update-output.txt; then
+            echo "updates_available=true" >> "$GITHUB_OUTPUT"
+            echo "⚠️ Pre-commit hook updates available"
+          else
+            echo "updates_available=false" >> "$GITHUB_OUTPUT"
+            echo "✅ All pre-commit hooks are up to date"
+          fi
+
+          cat update-output.txt
+          echo "---" >> update-output.txt
+
+      - name: Create PR with updates
+        if: steps.check.outputs.updates_available == 'true'
+        uses: actions/github-script@v9
+        with:
+          github-token: ${{ secrets.PULL_REQUEST_TOKEN }}
+          script: |
+            const fs = require('fs');
+            const { execSync } = require('child_process');
+
+            const prs = await github.rest.pulls.list({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              state: 'open',
+              head: `${context.repo.owner}:chore/update-pre-commit-hooks`
+            });
+
+            if (prs.data.length > 0) {
+              console.log(`PR already exists: #${prs.data[0].number}`);
+              return;
+            }
+
+            const branchName = 'chore/update-pre-commit-hooks';
+
+            try {
+              const { data: ref } = await github.rest.git.getRef({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                ref: 'heads/main'
+              });
+
+              await github.rest.git.createRef({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                ref: `refs/heads/${branchName}`,
+                sha: ref.object.sha
+              });
+
+              console.log(`✅ Created branch: ${branchName}`);
+
+              execSync('pre-commit autoupdate', { stdio: 'inherit' });
+
+              const updatedConfig = fs.readFileSync('.pre-commit-config.yaml', 'utf8');
+
+              const { data: currentFile } = await github.rest.repos.getContent({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                path: '.pre-commit-config.yaml',
+                ref: branchName
+              });
+
+              await github.rest.repos.createOrUpdateFileContents({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                path: '.pre-commit-config.yaml',
+                message: 'chore: update pre-commit hook versions',
+                content: Buffer.from(updatedConfig).toString('base64'),
+                sha: currentFile.sha,
+                branch: branchName
+              });
+
+              console.log('✅ Updated .pre-commit-config.yaml');
+
+              const updateOutput = fs.readFileSync('update-output.txt', 'utf8');
+
+              const { data: pr } = await github.rest.pulls.create({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                title: 'chore: update pre-commit hook versions',
+                head: branchName,
+                base: 'main',
+                body: `## Update Pre-commit Hooks
+
+This PR updates the pre-commit hook versions to their latest releases.
+
+### Changes
+
+\`\`\`
+${updateOutput}
+\`\`\`
+
+### Testing
+
+The pre-commit hooks will be automatically tested when this PR is created. To test locally:
+
+\`\`\`bash
+pre-commit run --all-files
+\`\`\`
+
+---
+*This PR was automatically created by the pre-commit-updates workflow.*`
+              });
+
+              console.log(`✅ Created PR #${pr.number}`);
+
+              await github.rest.issues.addLabels({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: pr.number,
+                labels: ['dependencies', 'automated', 'release:patch']
+              });
+
+              console.log('✅ Added labels to PR');
+
+            } catch (error) {
+              console.error('Error creating PR:', error);
+
+              const updateOutput = fs.readFileSync('update-output.txt', 'utf8');
+
+              await github.rest.issues.create({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                title: '⬆️ Pre-commit hook updates available',
+                body: `## Pre-commit Hook Updates Available
+
+Updates are available for pre-commit hooks, but automatic PR creation failed.
+
+### Updates Available
+
+\`\`\`
+${updateOutput}
+\`\`\`
+
+### Manual Update Instructions
+
+1. Update hooks locally:
+   \`\`\`bash
+   pre-commit autoupdate
+   \`\`\`
+
+2. Test the updates:
+   \`\`\`bash
+   pre-commit run --all-files
+   \`\`\`
+
+3. Commit and push:
+   \`\`\`bash
+   git checkout -b chore/update-pre-commit-hooks
+   git add .pre-commit-config.yaml
+   git commit -m "chore: update pre-commit hook versions"
+   git push origin chore/update-pre-commit-hooks
+   \`\`\`
+
+4. Create a PR and add the \`release:patch\` label.
+
+---
+*This issue was automatically created by the pre-commit-updates workflow.*
+*Error: ${error.message}*`,
+                labels: ['dependencies', 'automated', 'enhancement']
+              });
+            }

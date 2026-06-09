@@ -1,0 +1,77 @@
+---
+name: Lint
+
+on: # yamllint disable-line rule:truthy
+  push:
+    branches: [main]
+  workflow_dispatch:
+  workflow_call:
+    inputs:
+      validate-bash:
+        description: Enable BASH and SHELL_SHFMT validators
+        type: boolean
+        default: true
+      validate-yaml:
+        description: Enable YAML validator
+        type: boolean
+        default: true
+      validate-markdown:
+        description: Enable Markdown validator
+        type: boolean
+        default: true
+      validate-github-actions:
+        description: Enable GitHub Actions validator
+        type: boolean
+        default: true
+      validate-json:
+        description: Enable JSON validator
+        type: boolean
+        default: false
+      shell-shfmt-opts:
+        description: Options passed to shfmt (only used when validate-bash is true)
+        type: string
+        default: "-i 2 -ci"
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  statuses: write
+
+jobs:
+  super-lint:
+    name: Super-Linter
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          token: ${{ github.token }}
+
+      - name: Super-Linter
+        uses: super-linter/super-linter@v8.6.0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          LINTER_RULES_PATH: .
+          VALIDATE_ALL_CODEBASE: true
+          DEFAULT_BRANCH: main
+          # Bash/shell
+          BASH_EXEC_IGNORE_LIBRARIES: ${{ inputs.validate-bash == true || inputs.validate-bash == '' }}
+          VALIDATE_BASH: ${{ inputs.validate-bash != false }}
+          VALIDATE_SHELL_SHFMT: ${{ inputs.validate-bash != false }}
+          SHELL_SHFMT_OPTS: ${{ inputs.shell-shfmt-opts || '-i 2 -ci' }}
+          # JSON
+          VALIDATE_JSON: ${{ inputs.validate-json == true }}
+          # YAML
+          YAML_LINTER_RULES: .yamllint
+          VALIDATE_YAML: ${{ inputs.validate-yaml != false }}
+          # Markdown
+          MARKDOWN_LINTER_RULES: .markdownlint.json
+          VALIDATE_MARKDOWN: ${{ inputs.validate-markdown != false }}
+          # GitHub Actions
+          VALIDATE_GITHUB_ACTIONS: ${{ inputs.validate-github-actions != false }}

@@ -1,0 +1,333 @@
+---
+name: Scheduled Security Scan
+
+on: # yamllint disable-line rule:truthy
+  schedule:
+    # Run every Monday at 03:00 UTC
+    - cron: "0 3 * * 1"
+  workflow_dispatch:
+  workflow_call:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  filesystem-scan:
+    name: Trivy Filesystem Scan
+    runs-on: ubuntu-slim
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      issues: write
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+        with:
+          token: ${{ github.token }}
+
+      - name: Run Trivy filesystem scanner (table output)
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          scan-type: "fs"
+          scan-ref: "."
+          format: "table"
+          severity: "CRITICAL,HIGH,MEDIUM"
+          exit-code: "0" # Don't fail the workflow, just report
+
+      - name: Run Trivy filesystem scanner (JSON output)
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          scan-type: "fs"
+          scan-ref: "."
+          format: "json"
+          output: "trivy-fs-results.json"
+          severity: "CRITICAL,HIGH"
+          exit-code: "0" # Don't fail the workflow, just report
+
+      - name: Check for vulnerabilities and create issue
+        if: github.event_name == 'schedule'
+        uses: actions/github-script@v9
+        with:
+          script: |
+            const fs = require('fs');
+
+            let trivyResults;
+            try {
+              const data = fs.readFileSync('trivy-fs-results.json', 'utf8');
+              trivyResults = JSON.parse(data);
+            } catch (error) {
+              console.log('No vulnerabilities file found or error reading it');
+              return;
+            }
+
+            let criticalCount = 0;
+            let highCount = 0;
+
+            if (trivyResults.Results) {
+              trivyResults.Results.forEach(result => {
+                if (result.Vulnerabilities) {
+                  result.Vulnerabilities.forEach(vuln => {
+                    if (vuln.Severity === 'CRITICAL') criticalCount++;
+                    if (vuln.Severity === 'HIGH') highCount++;
+                  });
+                }
+              });
+            }
+
+            if (criticalCount === 0 && highCount === 0) {
+              console.log('✅ No critical or high vulnerabilities found in filesystem scan!');
+              return;
+            }
+
+            const issues = await github.rest.issues.listForRepo({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              labels: 'security,automated',
+              state: 'open'
+            });
+
+            const existingIssue = issues.data.find(issue =>
+              issue.title.includes('Security vulnerabilities detected')
+            );
+
+            const body = `## 🔒 Security Vulnerabilities Detected (Filesystem Scan)
+
+Trivy security scan found vulnerabilities in the repository:
+
+- **Critical:** ${criticalCount}
+- **High:** ${highCount}
+
+### Action Required
+
+1. Review the vulnerabilities in the workflow logs (link below)
+2. Update affected dependencies or configurations
+3. Test the changes
+4. Create a PR with fixes
+
+### Scan Details
+
+- **Scan Date:** ${new Date().toISOString()}
+- **Scan Type:** Filesystem
+
+For detailed vulnerability information, check the workflow run:
+${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}
+
+---
+*This issue was automatically created by the security-scan workflow.*`;
+
+            if (existingIssue) {
+              await github.rest.issues.update({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: existingIssue.number,
+                body: body
+              });
+              console.log(`📝 Updated existing security issue #${existingIssue.number}`);
+            } else {
+              const newIssue = await github.rest.issues.create({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                title: '🔒 Security vulnerabilities detected',
+                body: body,
+                labels: ['security', 'automated', 'bug']
+              });
+              console.log(`📝 Created new security issue #${newIssue.data.number}`);
+            }
+
+      - name: Run Trivy filesystem scanner (fail on critical)
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          scan-type: "fs"
+          scan-ref: "."
+          format: "table"
+          severity: "CRITICAL"
+          exit-code: "1"
+
+  config-scan:
+    name: Trivy Config Scan
+    runs-on: ubuntu-slim
+    timeout-minutes: 10
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+        with:
+          token: ${{ github.token }}
+
+      - name: Run Trivy config scanner
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          scan-type: "config"
+          scan-ref: "."
+          format: "table"
+          exit-code: "0" # Don't fail the workflow, just report
+
+  container-scan:
+    name: Trivy Container Scan
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      issues: write
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+        with:
+          token: ${{ github.token }}
+
+      - name: Check for Dockerfile
+        id: check_dockerfile
+        run: |
+          if [[ -f Dockerfile ]]; then
+            echo "has_dockerfile=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "has_dockerfile=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Set up Docker Buildx
+        if: steps.check_dockerfile.outputs.has_dockerfile == 'true'
+        uses: docker/setup-buildx-action@v4
+
+      - name: Build container for scanning
+        if: steps.check_dockerfile.outputs.has_dockerfile == 'true'
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          load: true
+          tags: ${{ github.event.repository.name }}:scan
+          cache-from: |
+            type=gha,scope=${{ github.ref }}
+            type=gha,scope=refs/heads/main
+          cache-to: type=gha,mode=max,scope=${{ github.ref }}
+
+      - name: Run Trivy container scanner (table output)
+        if: steps.check_dockerfile.outputs.has_dockerfile == 'true'
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          image-ref: "${{ github.event.repository.name }}:scan"
+          format: "table"
+          severity: "CRITICAL,HIGH,MEDIUM"
+          exit-code: "0" # Don't fail the workflow, just report
+
+      - name: Run Trivy container scanner (JSON output)
+        if: steps.check_dockerfile.outputs.has_dockerfile == 'true'
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          image-ref: "${{ github.event.repository.name }}:scan"
+          format: "json"
+          output: "trivy-image-results.json"
+          severity: "CRITICAL,HIGH"
+          exit-code: "0" # Don't fail the workflow, just report
+
+      - name: Check for container vulnerabilities and create issue
+        if: steps.check_dockerfile.outputs.has_dockerfile == 'true' && github.event_name == 'schedule'
+        uses: actions/github-script@v9
+        with:
+          script: |
+            const fs = require('fs');
+
+            let trivyResults;
+            try {
+              const data = fs.readFileSync('trivy-image-results.json', 'utf8');
+              trivyResults = JSON.parse(data);
+            } catch (error) {
+              console.log('No vulnerabilities file found or error reading it');
+              return;
+            }
+
+            let criticalCount = 0;
+            let highCount = 0;
+
+            if (trivyResults.Results) {
+              trivyResults.Results.forEach(result => {
+                if (result.Vulnerabilities) {
+                  result.Vulnerabilities.forEach(vuln => {
+                    if (vuln.Severity === 'CRITICAL') criticalCount++;
+                    if (vuln.Severity === 'HIGH') highCount++;
+                  });
+                }
+              });
+            }
+
+            if (criticalCount === 0 && highCount === 0) {
+              console.log('✅ No critical or high vulnerabilities found in container image!');
+              return;
+            }
+
+            const issues = await github.rest.issues.listForRepo({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              labels: 'security,automated',
+              state: 'open'
+            });
+
+            const existingIssue = issues.data.find(issue =>
+              issue.title.includes('Security vulnerabilities detected')
+            );
+
+            const body = `## 🔒 Security Vulnerabilities Detected (Container Image)
+
+Trivy security scan found vulnerabilities in the container image:
+
+- **Critical:** ${criticalCount}
+- **High:** ${highCount}
+
+### Action Required
+
+1. Review the vulnerabilities in the workflow logs (link below)
+2. Update base image or dependencies
+3. Rebuild and test the container
+4. Create a PR with fixes
+
+### Scan Details
+
+- **Scan Date:** ${new Date().toISOString()}
+- **Scan Type:** Container Image
+- **Image:** ${{ github.event.repository.name }}:scan
+
+For detailed vulnerability information, check the workflow run:
+${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}
+
+---
+*This issue was automatically created by the security-scan workflow.*`;
+
+            if (existingIssue) {
+              await github.rest.issues.update({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: existingIssue.number,
+                body: body
+              });
+              console.log(`📝 Updated existing security issue #${existingIssue.number}`);
+            } else {
+              const newIssue = await github.rest.issues.create({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                title: '🔒 Security vulnerabilities detected in container',
+                body: body,
+                labels: ['security', 'automated', 'bug']
+              });
+              console.log(`📝 Created new security issue #${newIssue.data.number}`);
+            }
+
+      - name: Run Trivy container scanner (fail on critical)
+        if: steps.check_dockerfile.outputs.has_dockerfile == 'true'
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          image-ref: "${{ github.event.repository.name }}:scan"
+          format: "table"
+          severity: "CRITICAL"
+          exit-code: "1"
+
+      - name: Skip container scan (no Dockerfile)
+        if: steps.check_dockerfile.outputs.has_dockerfile == 'false'
+        run: echo "ℹ️ No Dockerfile found, skipping container scan"

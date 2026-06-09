@@ -1,0 +1,232 @@
+---
+name: Dependency Dashboard
+
+on: # yamllint disable-line rule:truthy
+  schedule:
+    # Run every Monday at 10:00 UTC
+    - cron: "0 10 * * 1"
+  workflow_dispatch:
+  workflow_call:
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  create-dashboard:
+    name: Create Dependency Dashboard
+    runs-on: ubuntu-slim
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+        with:
+          token: ${{ github.token }}
+
+      - name: Collect repository information
+        id: repo_info
+        run: |
+          SHELL_COUNT=$(find . -name "*.sh" -o -name "*.bash" | wc -l)
+          PYTHON_COUNT=$(find . -name "*.py" | wc -l)
+          YAML_COUNT=$(find . -name "*.yml" -o -name "*.yaml" | wc -l)
+          DOCKERFILE_COUNT=$(find . -name "Dockerfile*" | wc -l)
+          WORKFLOW_COUNT=$(find .github/workflows -name "*.yml" -o -name "*.yaml" 2>/dev/null | wc -l)
+
+          {
+            echo "shell=$SHELL_COUNT"
+            echo "python=$PYTHON_COUNT"
+            echo "yaml=$YAML_COUNT"
+            echo "dockerfile=$DOCKERFILE_COUNT"
+            echo "workflows=$WORKFLOW_COUNT"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Check GitHub Actions versions
+        id: actions_check
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          if [[ -d .github/workflows ]]; then
+            {
+              echo "| Action | Current | Latest | Status |"
+              echo "|--------|---------|--------|--------|"
+            } > /tmp/actions_status.md
+
+            grep -h "uses:" .github/workflows/*.yml 2>/dev/null | \
+              sed 's/.*uses:[[:space:]]*//' | \
+              sed 's/[[:space:]]*#.*//' | \
+              grep '@' | \
+              sort -u | \
+              while IFS='@' read -r action current_ver; do
+                if [[ "$action" == ./* ]]; then
+                  continue
+                fi
+
+                rate_limit=$(gh api rate_limit --jq '.resources.core.remaining' 2>/dev/null || echo "0")
+                if [[ "$rate_limit" -lt 10 ]]; then
+                  printf "| \`%s\` | N/A | N/A | ⚠️ Rate limit low |\n" "$action" >> /tmp/actions_status.md
+                  echo "Remaining actions skipped due to rate limit exhaustion." >> /tmp/actions_status.md
+                  break
+                fi
+
+                repo=$(echo "$action" | cut -d'/' -f1-2)
+
+                latest=$(gh api "repos/$repo/releases/latest" --jq '.tag_name' 2>/dev/null || \
+                         gh api "repos/$repo/tags" --jq '.[0].name' 2>/dev/null || \
+                         echo "N/A")
+
+                [ -z "$latest" ] && latest="N/A"
+
+                current_norm="${current_ver#v}"
+                latest_norm="${latest#v}"
+
+                if [[ "$latest" = "N/A" ]]; then
+                  status="⚠️ API Error"
+                elif [[ "$current_ver" = "$latest" ]]; then
+                  status="✅ Up-to-date"
+                elif [[ "$current_ver" =~ ^v[0-9]+$ ]]; then
+                  current_major=$(echo "$current_norm" | cut -d'.' -f1)
+                  latest_major=$(echo "$latest_norm" | cut -d'.' -f1)
+                  if [[ "$current_major" = "$latest_major" ]]; then
+                    status="✅ Up-to-date"
+                  else
+                    status="⬆️ Update available"
+                  fi
+                else
+                  highest="$(printf '%s\n%s\n' "$current_norm" "$latest_norm" | sort -V | tail -1)"
+                  if [[ "$highest" = "$current_norm" ]]; then
+                    status="✅ Up-to-date"
+                  else
+                    status="⬆️ Update available"
+                  fi
+                fi
+
+                printf "| \`%s\` | %s | %s | %s |\n" \
+                  "$action" "$current_ver" "$latest" "$status" >> /tmp/actions_status.md
+              done
+
+            cat /tmp/actions_status.md
+          fi
+
+      - name: Check for Dockerfile dependencies
+        id: docker_check
+        if: steps.repo_info.outputs.dockerfile > 0
+        run: |
+          {
+            echo "# Docker Dependencies"
+            echo ""
+          } > /tmp/docker_status.md
+
+          if [[ -f Dockerfile ]]; then
+            FROM_LINE=$(grep '^FROM' Dockerfile | head -1)
+
+            {
+              echo "## Base Image"
+              echo "- $FROM_LINE"
+              echo ""
+              echo "## ARG Versions"
+            } >> /tmp/docker_status.md
+
+            grep '^ARG.*VERSION' Dockerfile | while read -r line; do
+              echo "- \`$line\`" >> /tmp/docker_status.md
+            done || echo "- No ARG versions found" >> /tmp/docker_status.md
+          fi
+
+          cat /tmp/docker_status.md
+
+      - name: Create or update dashboard issue
+        uses: actions/github-script@v9
+        with:
+          script: |
+            const fs = require('fs');
+
+            const repoInfo = {
+              shell: ${{ steps.repo_info.outputs.shell }},
+              python: ${{ steps.repo_info.outputs.python }},
+              yaml: ${{ steps.repo_info.outputs.yaml }},
+              dockerfile: ${{ steps.repo_info.outputs.dockerfile }},
+              workflows: ${{ steps.repo_info.outputs.workflows }}
+            };
+
+            let body = `# 📊 Dependency Dashboard\n\n`;
+            body += `**Last Updated:** ${new Date().toISOString()}\n\n`;
+            body += `## Repository Statistics\n\n`;
+            body += `| File Type | Count |\n`;
+            body += `|-----------|-------|\n`;
+            body += `| Shell Scripts | ${repoInfo.shell} |\n`;
+            body += `| Python Files | ${repoInfo.python} |\n`;
+            body += `| YAML Files | ${repoInfo.yaml} |\n`;
+            body += `| Dockerfiles | ${repoInfo.dockerfile} |\n`;
+            body += `| GitHub Workflows | ${repoInfo.workflows} |\n\n`;
+
+            try {
+              const actionsStatus = fs.readFileSync('/tmp/actions_status.md', 'utf8');
+              body += `## GitHub Actions Dependencies\n\n${actionsStatus}\n\n`;
+              body += `> 💡 **Tip:** Update actions by running Dependabot or manually updating workflow files.\n\n`;
+            } catch (e) {
+              body += `## GitHub Actions Dependencies\n\nNo workflows found.\n\n`;
+            }
+
+            try {
+              const dockerStatus = fs.readFileSync('/tmp/docker_status.md', 'utf8');
+              body += `${dockerStatus}\n\n`;
+            } catch (e) {
+              // Docker info not available
+            }
+
+            body += `## Dependency Management\n\n`;
+            body += `- **Dependabot:** Automated weekly updates for GitHub Actions`;
+            if (repoInfo.dockerfile > 0) {
+              body += ` and Docker images`;
+            }
+            body += `\n`;
+            body += `- **Security Scanning:** Trivy scans run every Monday at 03:00 UTC\n`;
+            body += `- **Pre-commit Hooks:** Local validation before commits\n\n`;
+
+            body += `## Quick Actions\n\n`;
+            const repoUrl = `https://github.com/${context.repo.owner}/${context.repo.repo}`;
+            body += `- [View Dependabot PRs](${repoUrl}/pulls?q=is%3Apr+is%3Aopen+label%3Adependencies)\n`;
+            body += `- [View Security Issues](${repoUrl}/issues?q=is%3Aissue+is%3Aopen+label%3Asecurity)\n`;
+            body += `- [Run Security Scan](${repoUrl}/actions/workflows/security-scan.yml)\n\n`;
+
+            body += `---\n`;
+            body += `*This dashboard is automatically updated every Monday at 10:00 UTC.*\n`;
+            const workflowUrl = `${repoUrl}/actions/workflows/dependency-dashboard.yml`;
+            body += `*To manually trigger an update, run the [Dependency Dashboard workflow](${workflowUrl}).*`;
+
+            const issues = await github.rest.issues.listForRepo({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              labels: 'dependencies,dashboard',
+              state: 'open'
+            });
+
+            const existingIssue = issues.data.find(issue =>
+              issue.title.includes('Dependency Dashboard')
+            );
+
+            if (existingIssue) {
+              await github.rest.issues.update({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: existingIssue.number,
+                body: body
+              });
+              console.log(`📝 Updated dashboard issue #${existingIssue.number}`);
+            } else {
+              const newIssue = await github.rest.issues.create({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                title: '📊 Dependency Dashboard',
+                body: body,
+                labels: ['dependencies', 'dashboard', 'automated']
+              });
+
+              await github.rest.issues.update({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: newIssue.data.number,
+                state: 'open'
+              });
+
+              console.log(`📝 Created dashboard issue #${newIssue.data.number}`);
+            }
