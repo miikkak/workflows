@@ -87,16 +87,27 @@ jobs:
                   "- Only flag real issues — formatting and syntax are handled by shfmt/shellcheck/yamllint\n"
                   "- Be concise and actionable; one sentence per finding where possible\n"
                   "- Skip changes that are obviously correct boilerplate\n"
-                  "- If no issues found, say so briefly\n"
-                  "- Format as markdown: one-line summary, then bullet points for findings\n"
                   "- Do NOT flag version numbers, package versions, or software releases as "
                   "invalid or non-existent — you cannot verify release status at runtime and "
                   "your training data is outdated; treat all explicit version pins as intentional\n"
                   "- Do NOT suggest systemd, journalctl, systemctl or any systemd tooling — "
-                  "this system uses OpenRC"
+                  "this system uses OpenRC\n\n"
+                  "Response format — use exactly this structure:\n\n"
+                  "One-line summary of the change.\n\n"
+                  "### MUST FIX\n"
+                  "Definite bugs, security issues, or correctness problems you are certain about. "
+                  "Omit this section (do not print the heading) if there are none.\n\n"
+                  "### CONSIDER\n"
+                  "Uncertain findings, style suggestions, or simplifications worth noting. "
+                  "Omit this section (do not print the heading) if there are none.\n\n"
+                  "End your response with exactly one of these two lines (nothing after it):\n"
+                  "VERDICT: PASS\n"
+                  "VERDICT: ISSUES\n\n"
+                  "Use VERDICT: ISSUES only when there are items under MUST FIX. "
+                  "Use VERDICT: PASS when there are no MUST FIX items, even if CONSIDER items exist."
               )
               message = client.messages.create(
-                  model="claude-haiku-4-5-20251001",
+                  model="claude-sonnet-4-6",
                   max_tokens=2048,
                   system=[{
                       "type": "text",
@@ -134,7 +145,7 @@ jobs:
               sys.exit(0)
 
           review_text = review(diff)
-          has_issues = "no issues found" not in review_text.lower()
-          event = "REQUEST_CHANGES" if has_issues else "COMMENT"
+          has_must_fix = "VERDICT: ISSUES" in review_text
+          event = "REQUEST_CHANGES" if has_must_fix else "COMMENT"
           post_review(f"## Claude Code Review\n\n{review_text}", event)
           PYEOF
