@@ -108,7 +108,7 @@ jobs:
               )
               message = client.messages.create(
                   model="claude-sonnet-4-6",
-                  max_tokens=2048,
+                  max_tokens=4096,
                   system=[{
                       "type": "text",
                       "text": system_prompt,
@@ -145,7 +145,8 @@ jobs:
               sys.exit(0)
 
           review_text = review(diff)
-          has_must_fix = "VERDICT: ISSUES" in review_text
+          last_line = review_text.strip().splitlines()[-1].strip()
+          has_must_fix = last_line == "VERDICT: ISSUES"
           event = "REQUEST_CHANGES" if has_must_fix else "COMMENT"
           post_review(f"## Claude Code Review\n\n{review_text}", event)
           PYEOF
