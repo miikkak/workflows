@@ -130,6 +130,7 @@ jobs:
               pr_number = os.environ['PR_NUMBER']
               url = f"https://api.github.com/repos/{repo}/pulls/{pr_number}/reviews"
               payload = json.dumps({"body": body, "event": event}).encode()
+              last_exc = None
               for attempt in range(1, 4):
                   req = urllib.request.Request(url, data=payload, method='POST')
                   req.add_header('Authorization', f'Bearer {token}')
@@ -144,12 +145,14 @@ jobs:
                       if e.code in (401, 403, 422):
                           print(f"GitHub API error {e.code}: {e.reason} — not retrying")
                           raise
+                      last_exc = e
                       print(f"GitHub API error {e.code} (attempt {attempt}/3): {e.reason}")
                   except urllib.error.URLError as e:
+                      last_exc = e
                       print(f"GitHub connection error (attempt {attempt}/3): {e.reason}")
                   if attempt < 3:
                       time.sleep(2 ** attempt)
-              raise RuntimeError("Failed to post review after 3 attempts")
+              raise RuntimeError("Failed to post review after 3 attempts") from last_exc
 
           if not os.environ.get('BASE_SHA') or not os.environ.get('HEAD_SHA'):
               print("No PR context (workflow_dispatch without PR?), skipping review")
@@ -162,6 +165,8 @@ jobs:
 
           review_text = review(diff)
           last_line = review_text.strip().splitlines()[-1].strip()
+          if last_line not in ("VERDICT: PASS", "VERDICT: ISSUES"):
+              print(f"Warning: unexpected verdict line {last_line!r} — defaulting to COMMENT")
           has_must_fix = last_line == "VERDICT: ISSUES"
           event = "REQUEST_CHANGES" if has_must_fix else "COMMENT"
           try:
