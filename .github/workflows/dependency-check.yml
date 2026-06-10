@@ -45,10 +45,14 @@ jobs:
             print(f"❌ Config file not found: {config_file}", file=sys.stderr)
             sys.exit(1)
 
-          with open(config_file) as f:
-            config = yaml.safe_load(f)
+          try:
+            with open(config_file) as f:
+              config = yaml.safe_load(f)
+          except yaml.YAMLError as e:
+            print(f"❌ Failed to parse config file {config_file}: {e}", file=sys.stderr)
+            sys.exit(1)
 
-          checks = config.get("checks", [])
+          checks = config.get("checks", []) if config else []
           matrix = json.dumps({"include": checks})
 
           output_file = os.environ["GITHUB_OUTPUT"]
@@ -104,8 +108,8 @@ jobs:
           echo "current-image=$FULL_IMAGE" >> "$GITHUB_OUTPUT"
           echo "📦 Checking image: $FULL_IMAGE"
 
-          # Extract the pinned digest from the file
-          STORED_DIGEST=$(grep -m1 "FROM ${FULL_IMAGE}" "$FILE" \
+          # Extract the pinned digest from the file (-F: fixed string, image name has dots)
+          STORED_DIGEST=$(grep -Fm1 "FROM ${FULL_IMAGE}" "$FILE" \
             | grep -oE 'sha256:[0-9a-f]{64}' || echo "unknown")
           if [[ "$STORED_DIGEST" == "unknown" ]]; then
             echo "⚠️ No digest pinned in $FILE for $FULL_IMAGE"
