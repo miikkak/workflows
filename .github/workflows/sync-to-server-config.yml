@@ -1,0 +1,220 @@
+---
+name: Sync to server-config
+
+on: # yamllint disable-line rule:truthy
+  workflow_dispatch:
+  workflow_call:
+    inputs:
+      source-name:
+        description: Source repo name (e.g. nftables, email-server) — used in branch name, commit message, and PR title
+        type: string
+        required: true
+      sync-paths:
+        description: Multiline list of src:dest path pairs, one per line
+        type: string
+        required: true
+      pr-title-prefix:
+        description: Prefix for the server-config PR title (e.g. "chore(nftables):")
+        type: string
+        required: true
+      rsync-exclude:
+        description: Space-separated filenames to protect from deletion in destination
+        type: string
+        default: ""
+    secrets:
+      deploy-token:
+        description: PAT with write access to server-config
+        required: true
+
+concurrency:
+  group: sync-to-server-config-${{ inputs.source-name }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  sync:
+    name: Sync ${{ inputs.source-name }} files to server-config
+    runs-on: ubuntu-slim
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout source repo
+        uses: actions/checkout@v6
+
+      - name: Checkout server-config
+        uses: actions/checkout@v6
+        with:
+          repository: miikkak/server-config
+          token: ${{ secrets.deploy-token }}
+          path: server-config
+          fetch-depth: 0
+
+      - name: Set up sync branch
+        env:
+          GH_TOKEN: ${{ secrets.deploy-token }}
+        run: |
+          set -Eeuo pipefail
+          cd server-config
+
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          BRANCH="auto-update/${{ inputs.source-name }}-sync"
+          git fetch origin main
+          git checkout -B "$BRANCH" origin/main
+
+      - name: Install rsync
+        run: |
+          set -Eeuo pipefail
+          sudo apt-get install -y --no-install-recommends rsync
+
+      - name: Sync files
+        run: |
+          set -Eeuo pipefail
+          RSYNC_EXCLUDE="${{ inputs.rsync-exclude }}"
+
+          # Build rsync --exclude flags from space-separated list
+          exclude_flags=()
+          if [[ -n "$RSYNC_EXCLUDE" ]]; then
+            for excl in $RSYNC_EXCLUDE; do
+              exclude_flags+=("--exclude=$excl")
+            done
+          fi
+
+          # Parse each "src:dest" line by splitting on the first colon only,
+          # so paths with colons (unusual but possible) are handled correctly.
+          while IFS= read -r line; do
+            [[ -z "$line" ]] && continue
+            src="${line%%:*}"
+            dest="${line#*:}"
+
+            # Skip if source does not exist (optional host dirs)
+            if [[ ! -e "$src" ]]; then
+              echo "Skipping $src (not found in source repo)"
+              continue
+            fi
+
+            mkdir -p "$dest"
+
+            if [[ -d "$src" ]]; then
+              rsync -a --delete "${exclude_flags[@]}" "$src/" "$dest/"
+            else
+              cp "$src" "$dest"
+            fi
+
+            echo "Synced: $src → $dest"
+          done <<< "${{ inputs.sync-paths }}"
+
+      - name: Look up source PR
+        id: source-pr
+        env:
+          GH_TOKEN: ${{ secrets.deploy-token }}
+        run: |
+          set -Eeuo pipefail
+          SOURCE_SHA="${{ github.sha }}"
+
+          PR_JSON=$(gh api \
+            "repos/${{ github.repository }}/commits/${SOURCE_SHA}/pulls" \
+            --jq '[.[] | select(.merged_at != null)] | .[0] // empty' \
+            2>/dev/null || true)
+
+          if [[ -n "$PR_JSON" ]]; then
+            PR_NUMBER=$(echo "$PR_JSON" | jq -r '.number // empty')
+            PR_TITLE=$(echo "$PR_JSON"  | jq -r '.title  // empty')
+            PR_BODY=$(echo "$PR_JSON"   | jq -r '.body   // empty')
+            echo "Found source PR #${PR_NUMBER}: ${PR_TITLE}"
+          else
+            PR_NUMBER=""
+            PR_TITLE=""
+            PR_BODY=""
+            echo "No merged PR found for commit ${SOURCE_SHA}"
+          fi
+
+          {
+            echo "pr_number=${PR_NUMBER}"
+            echo "pr_title=${PR_TITLE}"
+            echo "pr_body<<__EOF__"
+            echo "${PR_BODY}"
+            echo "__EOF__"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Commit and open or update PR
+        env:
+          GH_TOKEN: ${{ secrets.deploy-token }}
+        run: |
+          set -Eeuo pipefail
+          cd server-config
+
+          SOURCE_NAME="${{ inputs.source-name }}"
+          BRANCH="auto-update/${SOURCE_NAME}-sync"
+          SOURCE_SHA="${{ github.sha }}"
+          SOURCE_SHORT="${SOURCE_SHA:0:7}"
+          SOURCE_REPO="${{ github.repository }}"
+
+          PR_NUMBER="${{ steps.source-pr.outputs.pr_number }}"
+          PR_TITLE="${{ steps.source-pr.outputs.pr_title }}"
+          PR_BODY="${{ steps.source-pr.outputs.pr_body }}"
+
+          git add -A
+
+          if git diff --staged --quiet; then
+            echo "No changes to sync — server-config already up to date"
+            OPEN_PR=$(gh pr list \
+              --head "$BRANCH" --state open \
+              --json number --jq '.[0].number // empty')
+            if [[ -n "$OPEN_PR" ]]; then
+              gh pr close "$OPEN_PR" \
+                --comment "No changes remaining after ${SOURCE_NAME}@${SOURCE_SHORT}. Closing."
+            fi
+            exit 0
+          fi
+
+          CHANGED_FILES=$(git diff --staged --name-only | sort)
+
+          git commit -m "chore(${SOURCE_NAME}): sync from ${SOURCE_NAME}@${SOURCE_SHORT}"
+          # force-push is safe: concurrency cancel-in-progress:false ensures only one
+          # run per source repo is active at a time, so there is no concurrent writer.
+          git push --force origin "$BRANCH"
+
+          OPEN_PR=$(gh pr list \
+            --head "$BRANCH" --state open \
+            --json number --jq '.[0].number // empty')
+
+          if [[ -n "$OPEN_PR" ]]; then
+            echo "Updated existing PR #${OPEN_PR}"
+            exit 0
+          fi
+
+          COMMIT_URL="https://github.com/${SOURCE_REPO}/commit/${SOURCE_SHA}"
+          COMMIT_LINK="[\`${SOURCE_NAME}@${SOURCE_SHORT}\`](${COMMIT_URL})"
+
+          if [[ -n "$PR_NUMBER" ]]; then
+            PR_URL="https://github.com/${SOURCE_REPO}/pull/${PR_NUMBER}"
+            SOURCE_SECTION="## Source change"$'\n\n'
+            SOURCE_SECTION+="[#${PR_NUMBER} ${PR_TITLE}](${PR_URL})"$'\n'
+            SOURCE_SECTION+="← Merged from ${COMMIT_LINK}"
+          else
+            SOURCE_SECTION="## Source change"$'\n\n'"Commit ${COMMIT_LINK}"
+          fi
+
+          if [[ -n "$PR_BODY" ]]; then
+            SOURCE_SECTION+=$'\n\n'"---"$'\n\n'"${PR_BODY}"$'\n\n'"---"
+          fi
+
+          CHANGED_LIST=$(echo "$CHANGED_FILES" | sed 's|^roles/[^/]*/files/||' | sort)
+
+          BODY="${SOURCE_SECTION}"$'\n\n'
+          BODY+="## Synced files"$'\n\n'
+          BODY+="The following files were automatically copied from \`miikkak/${SOURCE_NAME}\`:"$'\n\n'
+          BODY+="\`\`\`"$'\n'"${CHANGED_LIST}"$'\n'"\`\`\`"$'\n\n'
+          BODY+="> **Note:** Review the source change above to determine what Ansible task/variable"$'\n'
+          BODY+="> changes are also required before deploying."$'\n\n'
+          BODY+="🤖 Generated with [Claude Code](https://claude.com/claude-code)"
+
+          gh pr create \
+            --head "$BRANCH" \
+            --title "${{ inputs.pr-title-prefix }} sync from ${SOURCE_NAME} repo" \
+            --body "$BODY" \
+            --label "ci/ready"
