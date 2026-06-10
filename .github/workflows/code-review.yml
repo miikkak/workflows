@@ -46,6 +46,7 @@ jobs:
           python3 << 'PYEOF'
           import json
           import os
+          import re
           import subprocess
           import sys
           import time
@@ -54,14 +55,58 @@ jobs:
 
           import anthropic
 
-          def get_diff():
+          def get_diff(from_sha, to_sha):
               result = subprocess.run(
-                  ['git', 'diff', os.environ['BASE_SHA'], os.environ['HEAD_SHA']],
+                  ['git', 'diff', from_sha, to_sha],
                   capture_output=True, text=True, check=True
               )
               return result.stdout
 
-          def review(diff):
+          def is_ancestor(ancestor_sha, descendant_sha):
+              result = subprocess.run(
+                  ['git', 'merge-base', '--is-ancestor', ancestor_sha, descendant_sha],
+                  capture_output=True
+              )
+              return result.returncode == 0
+
+          def github_get(path):
+              token = os.environ['GH_TOKEN']
+              repo = os.environ['REPO']
+              url = f"https://api.github.com/repos/{repo}{path}"
+              req = urllib.request.Request(url)
+              req.add_header('Authorization', f'Bearer {token}')
+              req.add_header('Accept', 'application/vnd.github+json')
+              req.add_header('X-GitHub-Api-Version', '2022-11-28')
+              with urllib.request.urlopen(req, timeout=30) as resp:
+                  return json.loads(resp.read())
+
+          def get_prior_claude_reviews():
+              try:
+                  reviews = github_get(f"/pulls/{os.environ['PR_NUMBER']}/reviews?per_page=100")
+                  return [r for r in reviews if '## Claude Code Review' in r.get('body', '')]
+              except Exception as e:
+                  print(f"Warning: could not fetch prior reviews: {e}")
+                  return []
+
+          def extract_reviewed_sha(body):
+              match = re.search(r'<!-- reviewed-sha: ([0-9a-f]{7,40}) -->', body)
+              return match.group(1) if match else None
+
+          def extract_consider_items(body):
+              lines = body.split('\n')
+              consider_lines = []
+              in_consider = False
+              for line in lines:
+                  if line.strip() == '### CONSIDER':
+                      in_consider = True
+                      continue
+                  if in_consider:
+                      if line.startswith('VERDICT:') or line.startswith('### '):
+                          break
+                      consider_lines.append(line)
+              return '\n'.join(consider_lines).strip()
+
+          def review(diff, prior_consider_blocks):
               client = anthropic.Anthropic(max_retries=3)
               system_prompt = (
                   "You are a code reviewer for a personal infrastructure and tooling repository "
@@ -109,6 +154,16 @@ jobs:
                   "Use VERDICT: ISSUES only when there are items under MUST FIX. "
                   "Use VERDICT: PASS when there are no MUST FIX items, even if CONSIDER items exist."
               )
+              user_content = f"Review this diff:\n\n```diff\n{diff[:60000]}\n```"
+              if prior_consider_blocks:
+                  combined = '\n\n---\n\n'.join(prior_consider_blocks)
+                  user_content += (
+                      "\n\n---\n\nThe following CONSIDER items were already raised in previous "
+                      "review rounds on this PR. Do not re-raise these suggestions — they have "
+                      "already been evaluated by the author (accepted or rejected). Only report "
+                      "genuinely new issues not covered by the items below:\n\n"
+                      + combined
+                  )
               message = client.messages.create(
                   model="claude-sonnet-4-6",
                   max_tokens=4096,
@@ -119,7 +174,7 @@ jobs:
                   }],
                   messages=[{
                       "role": "user",
-                      "content": f"Review this diff:\n\n```diff\n{diff[:60000]}\n```"
+                      "content": user_content
                   }]
               )
               return message.content[0].text
@@ -158,19 +213,46 @@ jobs:
               print("No PR context (workflow_dispatch without PR?), skipping review")
               sys.exit(0)
 
-          diff = get_diff()
+          head_sha = os.environ['HEAD_SHA']
+          base_sha = os.environ['BASE_SHA']
+
+          prior_reviews = get_prior_claude_reviews()
+          prior_reviews_sorted = sorted(prior_reviews, key=lambda r: r.get('submitted_at', ''))
+
+          # Compute diff from last reviewed commit, falling back to PR base
+          from_sha = base_sha
+          if prior_reviews_sorted:
+              last_sha = extract_reviewed_sha(prior_reviews_sorted[-1].get('body', ''))
+              if last_sha and last_sha != head_sha and is_ancestor(last_sha, head_sha):
+                  from_sha = last_sha
+                  print(f"Incremental review from {last_sha[:8]} to {head_sha[:8]}")
+              elif last_sha == head_sha:
+                  print(f"HEAD {head_sha[:8]} already reviewed, skipping")
+                  sys.exit(0)
+              else:
+                  print(f"Prior review SHA not usable as base, falling back to PR base")
+
+          diff = get_diff(from_sha, head_sha)
           if not diff.strip():
               print("Empty diff, skipping review")
               sys.exit(0)
 
-          review_text = review(diff)
+          # Collect all prior CONSIDER items so Claude doesn't repeat them
+          prior_consider_blocks = [
+              c for r in prior_reviews_sorted
+              if (c := extract_consider_items(r.get('body', '')))
+          ]
+
+          review_text = review(diff, prior_consider_blocks)
           last_line = review_text.strip().splitlines()[-1].strip()
           if last_line not in ("VERDICT: PASS", "VERDICT: ISSUES"):
               print(f"Warning: unexpected verdict line {last_line!r} — defaulting to COMMENT")
           has_must_fix = last_line == "VERDICT: ISSUES"
           event = "REQUEST_CHANGES" if has_must_fix else "COMMENT"
+
+          full_body = f"## Claude Code Review\n<!-- reviewed-sha: {head_sha} -->\n\n{review_text}"
           try:
-              post_review(f"## Claude Code Review\n\n{review_text}", event)
+              post_review(full_body, event)
           except Exception as e:
               print(f"Warning: could not post review to GitHub: {e}")
               print("Review output:")
