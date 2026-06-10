@@ -52,7 +52,7 @@ jobs:
             print(f"❌ Failed to parse config file {config_file}: {e}", file=sys.stderr)
             sys.exit(1)
 
-          checks = config.get("checks", []) if config else []
+          checks = config.get("checks", []) if isinstance(config, dict) else []
           matrix = json.dumps({"include": checks})
 
           output_file = os.environ["GITHUB_OUTPUT"]
@@ -60,7 +60,7 @@ jobs:
             out.write(f"matrix={matrix}\n")
             out.write(f"has-checks={'true' if checks else 'false'}\n")
 
-          print(f"✅ Parsed {len(checks)} check(s): {[c['name'] for c in checks]}")
+          print(f"✅ Parsed {len(checks)} check(s): {[c.get('name', 'unnamed') for c in checks]}")
           PYEOF
 
   check:
@@ -95,7 +95,7 @@ jobs:
           if [[ -n "${IMAGE:-}" ]]; then
             FULL_IMAGE="$IMAGE"
           elif [[ -n "${IMAGE_ARG:-}" && -n "${IMAGE_PREFIX:-}" ]]; then
-            VERSION=$(grep -m1 "ARG ${IMAGE_ARG}=" "$FILE" | cut -d'=' -f2)
+            VERSION=$(grep -Fm1 "ARG ${IMAGE_ARG}=" "$FILE" | cut -d'=' -f2)
             if [[ -z "$VERSION" ]]; then
               echo "❌ Could not extract ARG ${IMAGE_ARG} from $FILE"
               exit 1
@@ -149,7 +149,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           # Extract current version from file
-          CURRENT=$(grep -m1 "${PATTERN}" "$FILE" | cut -d'=' -f2)
+          CURRENT=$(grep -Fm1 "${PATTERN}" "$FILE" | cut -d'=' -f2)
           if [[ -z "$CURRENT" ]]; then
             echo "❌ Could not extract version from $FILE using pattern: $PATTERN"
             exit 1
@@ -212,7 +212,7 @@ jobs:
           echo "📦 Tracking major version: $MAJOR_VERSION"
 
           # Extract current version from file
-          CURRENT=$(grep -m1 "${PATTERN}" "$FILE" | cut -d'=' -f2)
+          CURRENT=$(grep -Fm1 "${PATTERN}" "$FILE" | cut -d'=' -f2)
           if [[ -z "$CURRENT" ]]; then
             echo "❌ Could not extract version from $FILE using pattern: $PATTERN"
             exit 1
