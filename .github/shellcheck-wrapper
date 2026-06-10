@@ -1,0 +1,80 @@
+#!/usr/bin/env bash
+# Wrapper for shellcheck to fix actionlint v1.7.10 compatibility with shellcheck v0.11.0+
+#
+# actionlint v1.7.10 (latest as of 2025-12-30) calls shellcheck with:
+#   --norc -f json -x --shell bash -e SC1091,SC2194,SC2050,SC2154,SC2157,SC2043 -
+#
+# The exclusions are intentional for GitHub Actions context:
+#   SC1091: Not following sourced files (Actions don't have files to source)
+#   SC2194/SC2050: Constant expressions (common in templated YAML)
+#   SC2154: Variable not assigned (Actions inject variables like ${{ github.ref }})
+#   SC2157: Literal string in -n test (common in Actions conditionals)
+#   SC2043: Loop runs once (common Actions pattern)
+#
+# But shellcheck v0.11.0+ has two incompatibilities:
+#   1. -e CODE1,CODE2 syntax is invalid (should be --exclude=CODE1,CODE2)
+#   2. -f json - fails (dash interpreted as format, should use --format=json)
+#
+# This wrapper converts to valid syntax:
+#   --norc -x --exclude=CODE1,CODE2 --shell=bash --format=json -
+
+set -euo pipefail
+
+# Parse arguments
+exclude_codes=""
+format=""
+shell=""
+other_args=()
+
+skip_next=false
+skip_type=""
+
+for arg in "$@"; do
+  if [[ "$skip_next" == "true" ]]; then
+    case "$skip_type" in
+      exclude)
+        exclude_codes="$arg"
+        ;;
+      format)
+        format="$arg"
+        ;;
+      shell)
+        shell="$arg"
+        ;;
+    esac
+    skip_next=false
+    skip_type=""
+  elif [[ "$arg" == "-e" ]]; then
+    skip_next=true
+    skip_type="exclude"
+  elif [[ "$arg" == "-f" ]]; then
+    skip_next=true
+    skip_type="format"
+  elif [[ "$arg" == "--shell" ]]; then
+    skip_next=true
+    skip_type="shell"
+  else
+    other_args+=("$arg")
+  fi
+done
+
+# Reconstruct with proper syntax
+final_args=()
+
+# Add other flags (--norc, -x)
+for arg in "${other_args[@]}"; do
+  if [[ "$arg" != "-" ]]; then
+    final_args+=("$arg")
+  fi
+done
+
+# Add parsed options with = syntax
+[[ -n "$exclude_codes" ]] && final_args+=("--exclude=$exclude_codes")
+[[ -n "$shell" ]] && final_args+=("--shell=$shell")
+[[ -n "$format" ]] && final_args+=("--format=$format")
+
+# Add stdin marker at the end
+final_args+=("-")
+
+# Call the real shellcheck (find it in PATH)
+exec shellcheck "${final_args[@]}"

@@ -1,27 +1,53 @@
+# Pre-commit hooks configuration
+# Install: pip install pre-commit
+# Setup: pre-commit install
+# Run manually: pre-commit run --all-files
+
 repos:
+  # Standard pre-commit hooks
   - repo: https://github.com/pre-commit/pre-commit-hooks
     rev: v6.0.0
     hooks:
+      # Basic file checks
       - id: check-added-large-files
-        args: ["--maxkb=500"]
+        args: ["--maxkb=1000"]
       - id: check-case-conflict
       - id: check-merge-conflict
+      - id: check-symlinks
       - id: end-of-file-fixer
       - id: trailing-whitespace
       - id: mixed-line-ending
         args: ["--fix=lf"]
+
+      # File format validation
       - id: check-yaml
+      - id: check-json
       - id: check-toml
+      - id: check-xml
+
+      # Script validation
+      - id: check-executables-have-shebangs
+      - id: check-shebang-scripts-are-executable
+
+      # Python validation (runs only if .py files present)
+      - id: check-ast
+      - id: check-docstring-first
+
+      # Other useful checks
       - id: fix-byte-order-marker
       - id: detect-private-key
+
+      # Prevent commits to main branch
       - id: no-commit-to-branch
         args: ["--branch", "main", "--branch", "master"]
 
+  # YAML linting with yamllint
   - repo: https://github.com/adrienverge/yamllint
     rev: v1.38.0
     hooks:
       - id: yamllint
 
+  # Markdown linting
   - repo: https://github.com/igorshubovych/markdownlint-cli
     rev: v0.48.0
     hooks:
@@ -29,16 +55,20 @@ repos:
         args: ["--fix"]
         exclude: '^CHANGELOG\.md$'
 
+  # GitHub Actions workflow linting
   - repo: https://github.com/rhysd/actionlint
     rev: v1.7.12
     hooks:
       - id: actionlint
+        args: ["-shellcheck", ".github/shellcheck-wrapper"]
 
+  # Secret detection with gitleaks
   - repo: https://github.com/gitleaks/gitleaks
     rev: v8.30.0
     hooks:
       - id: gitleaks
 
+  # Commit message linting with commitlint
   - repo: https://github.com/alessandrojcm/commitlint-pre-commit-hook
     rev: v9.25.0
     hooks:
@@ -46,9 +76,39 @@ repos:
         stages: [commit-msg]
         additional_dependencies: ["@commitlint/config-conventional"]
 
+  # Python linting with ruff (only runs if .py files present)
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.15.16
+    hooks:
+      - id: ruff
+        args: [--fix]
+      - id: ruff-format
+
+  # Pre-push hooks - Second line of defense for branch protection
   - repo: https://github.com/pre-commit/pre-commit-hooks
     rev: v6.0.0
     hooks:
+      # Prevent pushes to protected branches (defense-in-depth)
       - id: no-commit-to-branch
         args: ["--branch", "main", "--branch", "master"]
+        stages: [pre-push]
+
+  # Super-linter pre-push: full CI-equivalent lint before the push lands
+  - repo: local
+    hooks:
+      - id: superlinter
+        name: super-linter
+        entry: >-
+          superlinter
+          VALIDATE_ALL_CODEBASE=true
+          VALIDATE_BASH=true
+          VALIDATE_SHELL_SHFMT=true
+          BASH_EXEC_IGNORE_LIBRARIES=true
+          VALIDATE_YAML=true
+          VALIDATE_MARKDOWN=true
+          VALIDATE_GITHUB_ACTIONS=true
+          "SHELL_SHFMT_OPTS=-i 2 -ci"
+        language: system
+        pass_filenames: false
+        always_run: true
         stages: [pre-push]
