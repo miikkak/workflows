@@ -1,0 +1,431 @@
+---
+name: Dependency Check
+
+on: # yamllint disable-line rule:truthy
+  workflow_call:
+    inputs:
+      config-file:
+        description: Path to the dependency-checks config file in the calling repo
+        default: .github/dependency-checks.yml
+        type: string
+
+permissions:
+  contents: read
+  issues: write
+  actions: write
+
+jobs:
+  parse-config:
+    name: Parse Config
+    runs-on: ubuntu-slim
+    outputs:
+      matrix: ${{ steps.parse.outputs.matrix }}
+      has-checks: ${{ steps.parse.outputs.has-checks }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+
+      - name: Install pyyaml
+        run: pip install pyyaml -q
+
+      - name: Parse dependency-checks config
+        id: parse
+        env:
+          CONFIG_FILE: ${{ inputs.config-file }}
+        run: |
+          python3 - <<'PYEOF'
+          import json
+          import os
+          import sys
+          import yaml
+
+          config_file = os.environ["CONFIG_FILE"]
+          if not os.path.exists(config_file):
+            print(f"❌ Config file not found: {config_file}", file=sys.stderr)
+            sys.exit(1)
+
+          try:
+            with open(config_file) as f:
+              config = yaml.safe_load(f)
+          except yaml.YAMLError as e:
+            print(f"❌ Failed to parse config file {config_file}: {e}", file=sys.stderr)
+            sys.exit(1)
+
+          checks = config.get("checks", []) if isinstance(config, dict) else []
+          matrix = json.dumps({"include": checks})
+
+          output_file = os.environ["GITHUB_OUTPUT"]
+          with open(output_file, "a") as out:
+            out.write(f"matrix={matrix}\n")
+            out.write(f"has-checks={'true' if checks else 'false'}\n")
+
+          print(f"✅ Parsed {len(checks)} check(s): {[c.get('name', 'unnamed') for c in checks]}")
+          PYEOF
+
+  check:
+    name: Check ${{ matrix.name }}
+    needs: parse-config
+    if: needs.parse-config.outputs.has-checks == 'true'
+    runs-on: ubuntu-slim
+    strategy:
+      matrix: ${{ fromJson(needs.parse-config.outputs.matrix) }}
+      fail-fast: false
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+
+      # ── docker-digest handler ──────────────────────────────────────────────
+
+      - name: Set up Docker Buildx
+        if: matrix.type == 'docker-digest'
+        uses: docker/setup-buildx-action@v3
+
+      - name: Check docker digest
+        if: matrix.type == 'docker-digest'
+        id: docker-digest
+        env:
+          IMAGE: ${{ matrix.image }}
+          IMAGE_ARG: ${{ matrix.image-arg }}
+          IMAGE_PREFIX: ${{ matrix.image-prefix }}
+          FILE: ${{ matrix.file }}
+        run: |
+          # Resolve full image name (static or derived from a Dockerfile ARG)
+          if [[ -n "${IMAGE:-}" ]]; then
+            FULL_IMAGE="$IMAGE"
+          elif [[ -n "${IMAGE_ARG:-}" && -n "${IMAGE_PREFIX:-}" ]]; then
+            VERSION=$(grep -Fm1 "ARG ${IMAGE_ARG}=" "$FILE" | cut -d'=' -f2)
+            if [[ -z "$VERSION" ]]; then
+              echo "❌ Could not extract ARG ${IMAGE_ARG} from $FILE"
+              exit 1
+            fi
+            FULL_IMAGE="${IMAGE_PREFIX}:${VERSION}"
+          else
+            echo "❌ Either 'image' or both 'image-arg' and 'image-prefix' must be set"
+            exit 1
+          fi
+          echo "current-image=$FULL_IMAGE" >> "$GITHUB_OUTPUT"
+          echo "📦 Checking image: $FULL_IMAGE"
+
+          # Extract the pinned digest from the file (-F: fixed string, image name has dots)
+          STORED_DIGEST=$(grep -Fm1 "FROM ${FULL_IMAGE}" "$FILE" \
+            | grep -oE 'sha256:[0-9a-f]{64}' || echo "unknown")
+          if [[ "$STORED_DIGEST" == "unknown" ]]; then
+            echo "⚠️ No digest pinned in $FILE for $FULL_IMAGE"
+          else
+            echo "📦 Stored digest: $STORED_DIGEST"
+          fi
+          echo "current=$STORED_DIGEST" >> "$GITHUB_OUTPUT"
+
+          # Get the latest digest from the registry
+          LATEST_DIGEST=$(docker buildx imagetools inspect "$FULL_IMAGE" \
+            --format '{{.Manifest.Digest}}' 2>/dev/null \
+            | grep -m1 '^sha256:' || echo "unknown")
+          echo "latest=$LATEST_DIGEST" >> "$GITHUB_OUTPUT"
+          echo "📦 Latest registry digest: $LATEST_DIGEST"
+
+          if [[ "$STORED_DIGEST" == "unknown" || "$LATEST_DIGEST" == "unknown" ]]; then
+            echo "update-available=false" >> "$GITHUB_OUTPUT"
+            echo "⚠️ Could not determine digest(s), skipping update check"
+          elif [[ "$STORED_DIGEST" != "$LATEST_DIGEST" ]]; then
+            echo "update-available=true" >> "$GITHUB_OUTPUT"
+            echo "⚠️ Digest changed: $STORED_DIGEST → $LATEST_DIGEST"
+          else
+            echo "update-available=false" >> "$GITHUB_OUTPUT"
+            echo "✅ Digest is current"
+          fi
+
+      # ── github-release handler ─────────────────────────────────────────────
+
+      - name: Check github release
+        if: matrix.type == 'github-release'
+        id: github-release
+        env:
+          REPO: ${{ matrix.repo }}
+          FILE: ${{ matrix.file }}
+          PATTERN: ${{ matrix.pattern }}
+          INCLUDE_PRERELEASE: ${{ matrix.include-prerelease }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # Extract current version from file
+          CURRENT=$(grep -Fm1 "${PATTERN}" "$FILE" | cut -d'=' -f2)
+          if [[ -z "$CURRENT" ]]; then
+            echo "❌ Could not extract version from $FILE using pattern: $PATTERN"
+            exit 1
+          fi
+          echo "📦 Current version: $CURRENT"
+
+          # Fetch latest release from GitHub API
+          if [[ "${INCLUDE_PRERELEASE:-false}" == "true" ]]; then
+            # Include prereleases — pick first non-draft release
+            LATEST=$(gh api "repos/${REPO}/releases" \
+              --jq '[.[] | select(.draft == false)][0].tag_name')
+          else
+            # Default: first non-prerelease, non-draft release
+            LATEST=$(gh api "repos/${REPO}/releases" \
+              --jq '[.[] | select(.prerelease == false and .draft == false)][0].tag_name')
+          fi
+
+          if [[ -z "$LATEST" || "$LATEST" == "null" ]]; then
+            echo "❌ Could not fetch latest release for $REPO"
+            exit 1
+          fi
+          echo "🔍 Latest release tag: $LATEST"
+
+          # Normalize: strip leading 'v' from both for comparison
+          CURRENT_NORM="${CURRENT#v}"
+          LATEST_NORM="${LATEST#v}"
+
+          echo "current=$CURRENT_NORM" >> "$GITHUB_OUTPUT"
+          echo "latest=$LATEST_NORM" >> "$GITHUB_OUTPUT"
+
+          if [[ "$CURRENT_NORM" != "$LATEST_NORM" ]]; then
+            echo "update-available=true" >> "$GITHUB_OUTPUT"
+            echo "⚠️ Update available: $CURRENT_NORM → $LATEST_NORM"
+          else
+            echo "update-available=false" >> "$GITHUB_OUTPUT"
+            echo "✅ Version is current"
+          fi
+
+      # ── oracle-registry-tags handler ──────────────────────────────────────
+
+      - name: Check Oracle registry tags
+        if: matrix.type == 'oracle-registry-tags'
+        id: oracle-registry-tags
+        env:
+          REGISTRY_REPO: ${{ matrix.registry-repo }}
+          MAJOR_VERSION_FILE: ${{ matrix.major-version-file }}
+          FILE: ${{ matrix.file }}
+          PATTERN: ${{ matrix.pattern }}
+        run: |
+          # Read the major version to track
+          if [[ ! -f "$MAJOR_VERSION_FILE" ]]; then
+            echo "❌ Major version file not found: $MAJOR_VERSION_FILE"
+            exit 1
+          fi
+          MAJOR_VERSION=$(tr -d '[:space:]' < "$MAJOR_VERSION_FILE")
+          if [[ -z "$MAJOR_VERSION" ]]; then
+            echo "❌ Major version file is empty: $MAJOR_VERSION_FILE"
+            exit 1
+          fi
+          echo "📦 Tracking major version: $MAJOR_VERSION"
+
+          # Extract current version from file
+          CURRENT=$(grep -Fm1 "${PATTERN}" "$FILE" | cut -d'=' -f2)
+          if [[ -z "$CURRENT" ]]; then
+            echo "❌ Could not extract version from $FILE using pattern: $PATTERN"
+            exit 1
+          fi
+          echo "📦 Current version: $CURRENT"
+
+          # Obtain anonymous bearer token for Oracle Container Registry
+          ORACLE_AUTH_URL="https://container-registry.oracle.com/auth"
+          ORACLE_AUTH_URL+="?service=Oracle%20Registry&scope=repository:${REGISTRY_REPO}:pull"
+          TOKEN=$(curl -sf "$ORACLE_AUTH_URL" | jq -r '.token') || {
+            echo "❌ Failed to obtain Oracle registry auth token"
+            exit 1
+          }
+          if [[ -z "$TOKEN" || "$TOKEN" == "null" ]]; then
+            echo "❌ Oracle registry returned empty auth token"
+            exit 1
+          fi
+
+          # Fetch tags from Oracle Container Registry
+          TAGS_JSON=$(curl -sf \
+            -H "Authorization: Bearer $TOKEN" \
+            "https://container-registry.oracle.com/v2/${REGISTRY_REPO}/tags/list") || {
+            echo "❌ Failed to fetch tags from Oracle registry"
+            exit 1
+          }
+
+          # Filter tags matching major.minor.patch (e.g. 25.0.3) under the tracked major
+          LATEST=$(echo "$TAGS_JSON" \
+            | jq -r --arg major "$MAJOR_VERSION" \
+              '.tags[] | select(test("^" + $major + "\\.[0-9]+\\.[0-9]+$"))' \
+            | sort -V | tail -1)
+
+          if [[ -z "$LATEST" || "$LATEST" == "null" ]]; then
+            echo "❌ No matching tags found for major version $MAJOR_VERSION"
+            exit 1
+          fi
+          echo "🔍 Latest tag: $LATEST"
+
+          echo "current=$CURRENT" >> "$GITHUB_OUTPUT"
+          echo "latest=$LATEST" >> "$GITHUB_OUTPUT"
+
+          if [[ "$CURRENT" != "$LATEST" ]]; then
+            echo "update-available=true" >> "$GITHUB_OUTPUT"
+            echo "⚠️ Update available: $CURRENT → $LATEST"
+          else
+            echo "update-available=false" >> "$GITHUB_OUTPUT"
+            echo "✅ Version is current"
+          fi
+
+      # ── Collect unified result ─────────────────────────────────────────────
+
+      - name: Collect check result
+        id: result
+        env:
+          CHECK_TYPE: ${{ matrix.type }}
+          DOCKER_DIGEST_UPDATE: ${{ steps.docker-digest.outputs.update-available }}
+          DOCKER_DIGEST_CURRENT: ${{ steps.docker-digest.outputs.current }}
+          DOCKER_DIGEST_LATEST: ${{ steps.docker-digest.outputs.latest }}
+          DOCKER_DIGEST_IMAGE: ${{ steps.docker-digest.outputs.current-image }}
+          GITHUB_RELEASE_UPDATE: ${{ steps.github-release.outputs.update-available }}
+          GITHUB_RELEASE_CURRENT: ${{ steps.github-release.outputs.current }}
+          GITHUB_RELEASE_LATEST: ${{ steps.github-release.outputs.latest }}
+          ORACLE_TAGS_UPDATE: ${{ steps.oracle-registry-tags.outputs.update-available }}
+          ORACLE_TAGS_CURRENT: ${{ steps.oracle-registry-tags.outputs.current }}
+          ORACLE_TAGS_LATEST: ${{ steps.oracle-registry-tags.outputs.latest }}
+        run: |
+          case "$CHECK_TYPE" in
+            docker-digest)
+              echo "update-available=${DOCKER_DIGEST_UPDATE}" >> "$GITHUB_OUTPUT"
+              echo "current=${DOCKER_DIGEST_CURRENT}" >> "$GITHUB_OUTPUT"
+              echo "latest=${DOCKER_DIGEST_LATEST}" >> "$GITHUB_OUTPUT"
+              echo "dispatch-value=${DOCKER_DIGEST_LATEST}" >> "$GITHUB_OUTPUT"
+              ;;
+            github-release)
+              echo "update-available=${GITHUB_RELEASE_UPDATE}" >> "$GITHUB_OUTPUT"
+              echo "current=${GITHUB_RELEASE_CURRENT}" >> "$GITHUB_OUTPUT"
+              echo "latest=${GITHUB_RELEASE_LATEST}" >> "$GITHUB_OUTPUT"
+              echo "dispatch-value=${GITHUB_RELEASE_LATEST}" >> "$GITHUB_OUTPUT"
+              ;;
+            oracle-registry-tags)
+              echo "update-available=${ORACLE_TAGS_UPDATE}" >> "$GITHUB_OUTPUT"
+              echo "current=${ORACLE_TAGS_CURRENT}" >> "$GITHUB_OUTPUT"
+              echo "latest=${ORACLE_TAGS_LATEST}" >> "$GITHUB_OUTPUT"
+              echo "dispatch-value=${ORACLE_TAGS_LATEST}" >> "$GITHUB_OUTPUT"
+              ;;
+          esac
+
+      # ── Create or update issue ─────────────────────────────────────────────
+
+      - name: Create or update issue
+        if: steps.result.outputs.update-available == 'true'
+        uses: actions/github-script@v9
+        env:
+          CHECK_NAME: ${{ matrix.name }}
+          CHECK_TYPE: ${{ matrix.type }}
+          CURRENT: ${{ steps.result.outputs.current }}
+          LATEST: ${{ steps.result.outputs.latest }}
+          DOCKER_IMAGE: ${{ steps.docker-digest.outputs.current-image }}
+        with:
+          script: |
+            const checkName = process.env.CHECK_NAME;
+            const checkType = process.env.CHECK_TYPE;
+            const current = process.env.CURRENT;
+            const latest = process.env.LATEST;
+            const dockerImage = process.env.DOCKER_IMAGE;
+
+            const issueTitle = `⬆️ ${checkName}: update available`;
+
+            let bodyLines = [
+              `## ${checkName}: update available`,
+              '',
+            ];
+
+            if (checkType === 'docker-digest') {
+              bodyLines.push(
+                `A new digest is available for \`${dockerImage}\`.`,
+                '',
+                `| Field          | Value |`,
+                `| -------------- | ----- |`,
+                `| Image          | \`${dockerImage}\` |`,
+                `| Current Digest | \`${current}\` |`,
+                `| Latest Digest  | \`${latest}\` |`,
+                '',
+                `Update the pinned digest in the \`FROM\` line of \`Dockerfile\`.`,
+              );
+            } else {
+              bodyLines.push(
+                `A new version is available.`,
+                '',
+                `| Field           | Value |`,
+                `| --------------- | ----- |`,
+                `| Current Version | \`${current}\` |`,
+                `| Latest Version  | \`${latest}\` |`,
+                '',
+                `Update the version in \`Dockerfile\` and create a PR with the \`release:patch\` label.`,
+              );
+            }
+
+            bodyLines.push(
+              '',
+              '---',
+              `*Automatically created by the dependency-check workflow.*`,
+              `*Last checked: ${new Date().toISOString()}*`,
+            );
+
+            const body = bodyLines.join('\n');
+
+            // Search for existing open issue with this title
+            const issues = await github.rest.issues.listForRepo({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              labels: 'dependencies,automated',
+              state: 'open',
+            });
+
+            const existing = issues.data.find(i => i.title === issueTitle);
+
+            if (existing) {
+              await github.rest.issues.update({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: existing.number,
+                body,
+              });
+              console.log(`📝 Updated existing issue #${existing.number}`);
+            } else {
+              const created = await github.rest.issues.create({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                title: issueTitle,
+                body,
+                labels: ['dependencies', 'automated', 'enhancement'],
+              });
+              console.log(`📝 Created issue #${created.data.number}`);
+            }
+
+      # ── Dispatch auto-update workflow ──────────────────────────────────────
+
+      - name: Dispatch auto-update workflow
+        if: >-
+          steps.result.outputs.update-available == 'true' &&
+          matrix.auto-update-workflow != '' &&
+          matrix.auto-update-workflow != null
+        uses: actions/github-script@v9
+        env:
+          AUTO_UPDATE_WORKFLOW: ${{ matrix.auto-update-workflow }}
+          AUTO_UPDATE_INPUT: ${{ matrix.auto-update-input }}
+          CHECK_TYPE: ${{ matrix.type }}
+          DISPATCH_VALUE: ${{ steps.result.outputs.dispatch-value }}
+        with:
+          script: |
+            const workflowId = process.env.AUTO_UPDATE_WORKFLOW;
+            const checkType = process.env.CHECK_TYPE;
+            const dispatchValue = process.env.DISPATCH_VALUE;
+
+            // Determine input key: explicit override, or type-based default
+            let inputKey = process.env.AUTO_UPDATE_INPUT;
+            if (!inputKey) {
+              inputKey = checkType === 'docker-digest' ? 'digest' : 'version';
+            }
+
+            console.log(`🤖 Dispatching ${workflowId} with ${inputKey}=${dispatchValue}`);
+
+            try {
+              await github.rest.actions.createWorkflowDispatch({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                workflow_id: workflowId,
+                ref: 'main',
+                inputs: { [inputKey]: dispatchValue },
+              });
+              console.log('✅ Auto-update workflow dispatched successfully');
+            } catch (error) {
+              console.error(`❌ Failed to dispatch auto-update workflow: ${error.message}`);
+              // Non-fatal: issue was already created for manual fallback
+            }
