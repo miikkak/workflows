@@ -47,6 +47,8 @@ jobs:
           import os
           import subprocess
           import sys
+          import time
+          import urllib.error
           import urllib.request
 
           import anthropic
@@ -59,7 +61,7 @@ jobs:
               return result.stdout
 
           def review(diff):
-              client = anthropic.Anthropic()
+              client = anthropic.Anthropic(max_retries=3)
               system_prompt = (
                   "You are a code reviewer for a personal infrastructure and tooling repository "
                   "running Gentoo Linux with OpenRC (no systemd). "
@@ -127,13 +129,26 @@ jobs:
               pr_number = os.environ['PR_NUMBER']
               url = f"https://api.github.com/repos/{repo}/pulls/{pr_number}/reviews"
               payload = json.dumps({"body": body, "event": event}).encode()
-              req = urllib.request.Request(url, data=payload, method='POST')
-              req.add_header('Authorization', f'Bearer {token}')
-              req.add_header('Accept', 'application/vnd.github+json')
-              req.add_header('Content-Type', 'application/json')
-              req.add_header('X-GitHub-Api-Version', '2022-11-28')
-              with urllib.request.urlopen(req) as resp:
-                  print(f"Posted review ({event}): HTTP {resp.status}")
+              for attempt in range(1, 4):
+                  req = urllib.request.Request(url, data=payload, method='POST')
+                  req.add_header('Authorization', f'Bearer {token}')
+                  req.add_header('Accept', 'application/vnd.github+json')
+                  req.add_header('Content-Type', 'application/json')
+                  req.add_header('X-GitHub-Api-Version', '2022-11-28')
+                  try:
+                      with urllib.request.urlopen(req, timeout=30) as resp:
+                          print(f"Posted review ({event}): HTTP {resp.status}")
+                          return
+                  except urllib.error.HTTPError as e:
+                      if e.code in (401, 403, 422):
+                          print(f"GitHub API error {e.code}: {e.reason} — not retrying")
+                          raise
+                      print(f"GitHub API error {e.code} (attempt {attempt}/3): {e.reason}")
+                  except urllib.error.URLError as e:
+                      print(f"GitHub connection error (attempt {attempt}/3): {e.reason}")
+                  if attempt < 3:
+                      time.sleep(2 ** attempt)
+              raise RuntimeError("Failed to post review after 3 attempts")
 
           if not os.environ.get('BASE_SHA') or not os.environ.get('HEAD_SHA'):
               print("No PR context (workflow_dispatch without PR?), skipping review")
@@ -148,5 +163,11 @@ jobs:
           last_line = review_text.strip().splitlines()[-1].strip()
           has_must_fix = last_line == "VERDICT: ISSUES"
           event = "REQUEST_CHANGES" if has_must_fix else "COMMENT"
-          post_review(f"## Claude Code Review\n\n{review_text}", event)
+          try:
+              post_review(f"## Claude Code Review\n\n{review_text}", event)
+          except Exception as e:
+              print(f"Warning: could not post review to GitHub: {e}")
+              print("Review output:")
+              print(review_text)
+              sys.exit(1)
           PYEOF
