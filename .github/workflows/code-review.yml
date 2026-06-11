@@ -209,7 +209,7 @@ jobs:
                       time.sleep(2 ** attempt)
               raise RuntimeError("Failed to post review after 3 attempts") from last_exc
 
-          if not os.environ.get('BASE_SHA') or not os.environ.get('HEAD_SHA'):
+          if not os.environ.get('BASE_SHA') or not os.environ.get('HEAD_SHA') or not os.environ.get('PR_NUMBER'):
               print("No PR context (workflow_dispatch without PR?), skipping review")
               sys.exit(0)
 
