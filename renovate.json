@@ -1,6 +1,18 @@
 {
   "$schema": "https://docs.renovatebot.com/renovate-schema.json",
-  "extends": [
-    "config:recommended"
+  "extends": ["config:recommended"],
+  "regexManagers": [
+    {
+      "fileMatch": ["^\\.github/workflows/code-review\\.yml$"],
+      "matchStrings": ["ANTHROPIC_VERSION: \"(?<currentValue>[^\"]+)\""],
+      "depNameTemplate": "anthropic",
+      "datasourceTemplate": "pypi"
+    },
+    {
+      "fileMatch": ["^\\.github/workflows/dependency-check\\.yml$"],
+      "matchStrings": ["PYYAML_VERSION: \"(?<currentValue>[^\"]+)\""],
+      "depNameTemplate": "PyYAML",
+      "datasourceTemplate": "pypi"
+    }
   ]
 }

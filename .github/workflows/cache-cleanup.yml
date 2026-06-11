@@ -33,6 +33,7 @@ jobs:
             const now = Date.now();
             const maxAge = CACHE_AGE_DAYS * 24 * 60 * 60 * 1000;
             const deletedBranchMinAge = DELETED_BRANCH_MIN_AGE_DAYS * 24 * 60 * 60 * 1000;
+            const defaultBranch = context.payload.repository?.default_branch || 'main';
 
             console.log(`🧹 Starting cache cleanup`);
             console.log(`   - Removing caches older than ${CACHE_AGE_DAYS} days`);
@@ -59,7 +60,7 @@ jobs:
               if (cacheAge > maxAge) {
                 shouldDelete = true;
                 reason = `older than ${CACHE_AGE_DAYS} days (${cacheAgeDays} days old)`;
-              } else if (cache.ref && cache.ref !== 'refs/heads/main') {
+              } else if (cache.ref && cache.ref !== `refs/heads/${defaultBranch}`) {
                 if (cacheAge > deletedBranchMinAge) {
                   if (cache.ref.startsWith('refs/pull/')) {
                     const prMatch = cache.ref.match(/^refs\/pull\/(\d+)\//);
