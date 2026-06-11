@@ -30,10 +30,10 @@ jobs:
         uses: actions/cache@v5
         with:
           path: ~/.cache/pip
-          key: pip-pyyaml-${{ runner.os }}
+          key: pip-pyyaml-6.0.3-${{ runner.os }}
 
       - name: Install pyyaml
-        run: pip install pyyaml -q
+        run: pip install pyyaml==6.0.3 -q
 
       - name: Parse dependency-checks config
         id: parse
