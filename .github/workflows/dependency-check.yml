@@ -95,7 +95,7 @@ jobs:
           if [[ -n "${IMAGE:-}" ]]; then
             FULL_IMAGE="$IMAGE"
           elif [[ -n "${IMAGE_ARG:-}" && -n "${IMAGE_PREFIX:-}" ]]; then
-            VERSION=$(grep -Fm1 "ARG ${IMAGE_ARG}=" "$FILE" | cut -d'=' -f2)
+            VERSION=$(grep -Fm1 "ARG ${IMAGE_ARG}=" "$FILE" | cut -d'=' -f2 | tr -d "\"'")
             if [[ -z "$VERSION" ]]; then
               echo "❌ Could not extract ARG ${IMAGE_ARG} from $FILE"
               exit 1

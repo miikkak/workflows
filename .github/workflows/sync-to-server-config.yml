@@ -96,11 +96,11 @@ jobs:
               continue
             fi
 
-            mkdir -p "$dest"
-
             if [[ -d "$src" ]]; then
+              mkdir -p "$dest"
               rsync -a --delete "${exclude_flags[@]}" "$src/" "$dest/"
             else
+              mkdir -p "$(dirname "$dest")"
               cp "$src" "$dest"
             fi
 

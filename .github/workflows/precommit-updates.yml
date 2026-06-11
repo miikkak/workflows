@@ -121,6 +121,19 @@ jobs:
                 ref: 'heads/main'
               });
 
+              // Delete the branch if it already exists (e.g. from a previous failed run)
+              try {
+                await github.rest.git.deleteRef({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  ref: `heads/${branchName}`
+                });
+                console.log(`🗑️ Deleted stale branch: ${branchName}`);
+              } catch (deleteError) {
+                if (deleteError.status !== 422) throw deleteError;
+                // 422 = branch doesn't exist, which is fine
+              }
+
               await github.rest.git.createRef({
                 owner: context.repo.owner,
                 repo: context.repo.repo,
@@ -129,8 +142,6 @@ jobs:
               });
 
               console.log(`✅ Created branch: ${branchName}`);
-
-              execSync('pre-commit autoupdate', { stdio: 'inherit' });
 
               const updatedConfig = fs.readFileSync('.pre-commit-config.yaml', 'utf8');
 
