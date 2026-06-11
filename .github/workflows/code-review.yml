@@ -19,6 +19,8 @@ jobs:
     runs-on: ubuntu-slim
     if: github.event_name == 'workflow_call' || github.event.pull_request.draft == false
     timeout-minutes: 10
+    env:
+      ANTHROPIC_VERSION: "0.51.0"
 
     steps:
       - name: Checkout code
@@ -35,10 +37,10 @@ jobs:
         uses: actions/cache@v5
         with:
           path: ~/.cache/pip
-          key: pip-anthropic-0.51.0-${{ runner.os }}
+          key: pip-anthropic-${{ env.ANTHROPIC_VERSION }}-${{ runner.os }}
 
       - name: Install anthropic SDK
-        run: pip install anthropic==0.51.0
+        run: pip install anthropic==${{ env.ANTHROPIC_VERSION }}
 
       - name: Review PR with Claude
         env:

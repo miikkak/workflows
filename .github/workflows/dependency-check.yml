@@ -21,6 +21,8 @@ jobs:
     outputs:
       matrix: ${{ steps.parse.outputs.matrix }}
       has-checks: ${{ steps.parse.outputs.has-checks }}
+    env:
+      PYYAML_VERSION: "6.0.3"
 
     steps:
       - name: Checkout code
@@ -30,10 +32,10 @@ jobs:
         uses: actions/cache@v5
         with:
           path: ~/.cache/pip
-          key: pip-pyyaml-6.0.3-${{ runner.os }}
+          key: pip-pyyaml-${{ env.PYYAML_VERSION }}-${{ runner.os }}
 
       - name: Install pyyaml
-        run: pip install pyyaml==6.0.3 -q
+        run: pip install pyyaml==${{ env.PYYAML_VERSION }} -q
 
       - name: Parse dependency-checks config
         id: parse
