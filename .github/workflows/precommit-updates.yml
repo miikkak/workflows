@@ -25,6 +25,7 @@ permissions:
   contents: read
   issues: write
   pull-requests: write
+  actions: write
 
 jobs:
   check-updates:
@@ -51,9 +52,9 @@ jobs:
         uses: actions/cache@v5
         with:
           path: ~/.cache/pre-commit
-          key: pre-commit-${{ hashFiles('.pre-commit-config.yaml') }}
+          key: pre-commit-${{ runner.os }}-py${{ env.PYTHON_VERSION }}-${{ hashFiles('.pre-commit-config.yaml') }}
           restore-keys: |
-            pre-commit-
+            pre-commit-${{ runner.os }}-py${{ env.PYTHON_VERSION }}-
 
       - name: Install hadolint
         if: env.INSTALL_HADOLINT == 'true'
@@ -70,7 +71,7 @@ jobs:
 
       - name: Install pre-commit
         run: |
-          pip install -r requirements.txt
+          pip install pre-commit
           pre-commit --version
 
       - name: Check for hook updates
