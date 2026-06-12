@@ -88,7 +88,7 @@ jobs:
           while IFS= read -r line; do
             [[ -z "$line" ]] && continue
             src="${line%%:*}"
-            dest="${line#*:}"
+            dest="server-config/${line#*:}"
 
             # Skip if source does not exist (optional host dirs)
             if [[ ! -e "$src" ]]; then
@@ -161,10 +161,12 @@ jobs:
           if git diff --staged --quiet; then
             echo "No changes to sync — server-config already up to date"
             OPEN_PR=$(gh pr list \
+              --repo miikkak/server-config \
               --head "$BRANCH" --state open \
               --json number --jq '.[0].number // empty')
             if [[ -n "$OPEN_PR" ]]; then
               gh pr close "$OPEN_PR" \
+                --repo miikkak/server-config \
                 --comment "No changes remaining after ${SOURCE_NAME}@${SOURCE_SHORT}. Closing."
             fi
             exit 0
@@ -178,6 +180,7 @@ jobs:
           git push --force origin "$BRANCH"
 
           OPEN_PR=$(gh pr list \
+            --repo miikkak/server-config \
             --head "$BRANCH" --state open \
             --json number --jq '.[0].number // empty')
 
@@ -213,6 +216,7 @@ jobs:
           BODY+="🤖 Generated with [Claude Code](https://claude.com/claude-code)"
 
           gh pr create \
+            --repo miikkak/server-config \
             --head "$BRANCH" \
             --title "${{ inputs.pr-title-prefix }} sync from ${SOURCE_NAME} repo" \
             --body "$BODY" \
