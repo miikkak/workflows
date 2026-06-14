@@ -38,7 +38,6 @@ concurrency:
 
 permissions:
   contents: read
-  statuses: write
 
 jobs:
   super-lint:
@@ -69,11 +68,30 @@ jobs:
           } >> "$GITHUB_ENV"
 
       - name: Super-Linter
-        uses: super-linter/super-linter@v8.6.0
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          LINTER_RULES_PATH: .
-          VALIDATE_ALL_CODEBASE: true
-          DEFAULT_BRANCH: main
-          YAML_LINTER_RULES: .yamllint
-          MARKDOWN_LINTER_RULES: .markdownlint.json
+          SUPERLINTER_IMAGE: ghcr.io/super-linter/super-linter:v8.6.0
+        run: |
+          set -Eeuo pipefail
+          # Run super-linter directly via podman instead of the Docker action.
+          # The GitHub runner's container-action path hardcodes a
+          # -v /var/run/docker.sock mount that rootless podman cannot satisfy,
+          # so we invoke the image ourselves in RUN_LOCAL mode (no daemon, no
+          # socket, no GitHub API status reporting — the step exit code gates).
+          # Only forward VALIDATE_* vars that the configure step actually set;
+          # super-linter v8 rejects mixing include (true) and exclude (false).
+          podman_env=()
+          for v in VALIDATE_BASH VALIDATE_SHELL_SHFMT BASH_EXEC_IGNORE_LIBRARIES \
+                   VALIDATE_YAML VALIDATE_MARKDOWN VALIDATE_GITHUB_ACTIONS \
+                   VALIDATE_JSON SHELL_SHFMT_OPTS; do
+            [[ -n "${!v:-}" ]] && podman_env+=(-e "${v}=${!v}")
+          done
+          podman run --rm \
+            -e RUN_LOCAL=true \
+            -e DEFAULT_WORKSPACE=/tmp/lint \
+            -e LINTER_RULES_PATH=. \
+            -e DEFAULT_BRANCH=main \
+            -e YAML_LINTER_RULES=.yamllint \
+            -e MARKDOWN_LINTER_RULES=.markdownlint.json \
+            "${podman_env[@]}" \
+            -v "${GITHUB_WORKSPACE}:/tmp/lint:ro" \
+            "${SUPERLINTER_IMAGE}"
