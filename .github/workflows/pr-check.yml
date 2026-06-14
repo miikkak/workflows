@@ -67,6 +67,7 @@ jobs:
 
       - name: Cache tool binaries
         id: cache-tools
+        if: runner.environment == 'github-hosted'
         uses: actions/cache@v5
         with:
           path: ~/.cache/tools
@@ -123,6 +124,7 @@ jobs:
           python-version: "${{ env.PYTHON_VERSION }}"
 
       - name: Cache pre-commit environments
+        if: runner.environment == 'github-hosted'
         uses: actions/cache@v5
         with:
           path: ~/.cache/pre-commit
