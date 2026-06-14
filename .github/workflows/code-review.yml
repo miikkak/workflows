@@ -16,7 +16,7 @@ permissions:
 jobs:
   review:
     name: Claude Code Review
-    runs-on: ubuntu-slim
+    runs-on: self-hosted
     if: github.event_name == 'workflow_call' || github.event.pull_request.draft == false
     timeout-minutes: 10
     env:
@@ -29,6 +29,7 @@ jobs:
           fetch-depth: 0
 
       - name: Set up Python
+        if: runner.environment == 'github-hosted'
         uses: actions/setup-python@v6
         with:
           python-version: "3.14"
@@ -40,7 +41,14 @@ jobs:
           key: pip-anthropic-${{ env.ANTHROPIC_VERSION }}-${{ runner.os }}
 
       - name: Install anthropic SDK
-        run: pip install anthropic==${{ env.ANTHROPIC_VERSION }}
+        run: |
+          # Install into a venv: Gentoo's system python is PEP 668
+          # externally-managed (no system pip), so install pip-side packages in
+          # an isolated venv. Works identically on github-hosted and self-hosted.
+          python3 -m venv "$RUNNER_TEMP/review-venv"
+          "$RUNNER_TEMP/review-venv/bin/pip" install --quiet \
+            anthropic==${{ env.ANTHROPIC_VERSION }}
+          echo "$RUNNER_TEMP/review-venv/bin" >> "$GITHUB_PATH"
 
       - name: Review PR with Claude
         env:
