@@ -101,10 +101,13 @@ jobs:
 
       - name: Install tool binaries
         run: |
-          sudo install -m 0755 ~/.cache/tools/shellcheck /usr/local/bin/shellcheck
+          mkdir -p ~/.local/bin
+          install -m 0755 ~/.cache/tools/shellcheck ~/.local/bin/shellcheck
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          export PATH="$HOME/.local/bin:$PATH"
           shellcheck --version
           if [[ "${INSTALL_HADOLINT}" == "true" ]]; then
-            sudo install -m 0755 ~/.cache/tools/hadolint /usr/local/bin/hadolint
+            install -m 0755 ~/.cache/tools/hadolint ~/.local/bin/hadolint
             hadolint --version
           fi
 
