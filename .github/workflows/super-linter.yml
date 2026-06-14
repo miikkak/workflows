@@ -43,7 +43,7 @@ permissions:
 jobs:
   super-lint:
     name: Super-Linter
-    runs-on: ubuntu-latest
+    runs-on: self-hosted
     timeout-minutes: 10
 
     steps:
