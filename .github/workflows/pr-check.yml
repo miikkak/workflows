@@ -78,15 +78,17 @@ jobs:
           set -Eeuo pipefail
           mkdir -p ~/.cache/tools
 
-          SHELLCHECK_ARCHIVE="shellcheck-${SHELLCHECK_VERSION}.linux.x86_64.tar.xz"
-          curl -fsSL --retry 3 --retry-delay 5 \
-            "https://github.com/koalaman/shellcheck/releases/download/${SHELLCHECK_VERSION}/${SHELLCHECK_ARCHIVE}" \
-            -o "/tmp/${SHELLCHECK_ARCHIVE}"
-          echo "${SHELLCHECK_SHA256}  /tmp/${SHELLCHECK_ARCHIVE}" | sha256sum -c -
-          tar -xJf "/tmp/${SHELLCHECK_ARCHIVE}" -C /tmp
-          install -m 0755 "/tmp/shellcheck-${SHELLCHECK_VERSION}/shellcheck" ~/.cache/tools/shellcheck
+          if ! command -v shellcheck &>/dev/null; then
+            SHELLCHECK_ARCHIVE="shellcheck-${SHELLCHECK_VERSION}.linux.x86_64.tar.xz"
+            curl -fsSL --retry 3 --retry-delay 5 \
+              "https://github.com/koalaman/shellcheck/releases/download/${SHELLCHECK_VERSION}/${SHELLCHECK_ARCHIVE}" \
+              -o "/tmp/${SHELLCHECK_ARCHIVE}"
+            echo "${SHELLCHECK_SHA256}  /tmp/${SHELLCHECK_ARCHIVE}" | sha256sum -c -
+            tar -xJf "/tmp/${SHELLCHECK_ARCHIVE}" -C /tmp
+            install -m 0755 "/tmp/shellcheck-${SHELLCHECK_VERSION}/shellcheck" ~/.cache/tools/shellcheck
+          fi
 
-          if [[ "${INSTALL_HADOLINT}" == "true" ]]; then
+          if [[ "${INSTALL_HADOLINT}" == "true" ]] && ! command -v hadolint &>/dev/null; then
             HADOLINT_BASE="https://github.com/hadolint/hadolint/releases/download/${HADOLINT_VERSION}"
             curl -fsSL --retry 3 --retry-delay 5 \
               "${HADOLINT_BASE}/hadolint-Linux-x86_64" \
@@ -102,12 +104,16 @@ jobs:
       - name: Install tool binaries
         run: |
           mkdir -p ~/.local/bin
-          install -m 0755 ~/.cache/tools/shellcheck ~/.local/bin/shellcheck
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
           export PATH="$HOME/.local/bin:$PATH"
+          if ! command -v shellcheck &>/dev/null; then
+            install -m 0755 ~/.cache/tools/shellcheck ~/.local/bin/shellcheck
+          fi
           shellcheck --version
           if [[ "${INSTALL_HADOLINT}" == "true" ]]; then
-            install -m 0755 ~/.cache/tools/hadolint ~/.local/bin/hadolint
+            if ! command -v hadolint &>/dev/null; then
+              install -m 0755 ~/.cache/tools/hadolint ~/.local/bin/hadolint
+            fi
             hadolint --version
           fi
 
