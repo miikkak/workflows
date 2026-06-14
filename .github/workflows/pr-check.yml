@@ -80,40 +80,58 @@ jobs:
           # to PATH. ~/.local/bin therefore shadows any same-named shims in
           # /usr/local/bin (e.g. self-hosted runners may carry podman-container
           # wrappers for shellcheck/hadolint that must not be used in CI).
-          # Downloads are gated on the cached file existing — self-healing if the
-          # cache action reports a hit but restores nothing.
+          #
+          # Prefer the real system binary in /usr/bin when it already matches the
+          # pinned version — self-hosted Gentoo runners ship the exact pinned
+          # binaries, so copying them locally avoids a redundant network
+          # download. Fall back to a pinned download (cached in ~/.cache/tools)
+          # when the system binary is absent or version-mismatched, e.g. on
+          # github-hosted runners. The download guard is the cached file existing
+          # — self-healing if the cache action reports a hit but restores nothing.
           TOOLS_DIR="$HOME/.cache/tools"
           BIN_DIR="$HOME/.local/bin"
           mkdir -p "$TOOLS_DIR" "$BIN_DIR"
           echo "$BIN_DIR" >> "$GITHUB_PATH"
           export PATH="$BIN_DIR:$PATH"
 
-          if [[ ! -x "$TOOLS_DIR/shellcheck" ]]; then
-            SHELLCHECK_ARCHIVE="shellcheck-${SHELLCHECK_VERSION}.linux.x86_64.tar.xz"
-            curl -fsSL --retry 3 --retry-delay 5 \
-              "https://github.com/koalaman/shellcheck/releases/download/${SHELLCHECK_VERSION}/${SHELLCHECK_ARCHIVE}" \
-              -o "/tmp/${SHELLCHECK_ARCHIVE}"
-            echo "${SHELLCHECK_SHA256}  /tmp/${SHELLCHECK_ARCHIVE}" | sha256sum -c -
-            tar -xJf "/tmp/${SHELLCHECK_ARCHIVE}" -C /tmp
-            install -m 0755 "/tmp/shellcheck-${SHELLCHECK_VERSION}/shellcheck" "$TOOLS_DIR/shellcheck"
+          SHELLCHECK_BARE="${SHELLCHECK_VERSION#v}"
+          if [[ -x /usr/bin/shellcheck ]] \
+            && /usr/bin/shellcheck --version 2>/dev/null | grep -qwF "$SHELLCHECK_BARE"; then
+            install -m 0755 /usr/bin/shellcheck "$BIN_DIR/shellcheck"
+          else
+            if [[ ! -x "$TOOLS_DIR/shellcheck" ]]; then
+              SHELLCHECK_ARCHIVE="shellcheck-${SHELLCHECK_VERSION}.linux.x86_64.tar.xz"
+              curl -fsSL --retry 3 --retry-delay 5 \
+                "https://github.com/koalaman/shellcheck/releases/download/${SHELLCHECK_VERSION}/${SHELLCHECK_ARCHIVE}" \
+                -o "/tmp/${SHELLCHECK_ARCHIVE}"
+              echo "${SHELLCHECK_SHA256}  /tmp/${SHELLCHECK_ARCHIVE}" | sha256sum -c -
+              tar -xJf "/tmp/${SHELLCHECK_ARCHIVE}" -C /tmp
+              install -m 0755 "/tmp/shellcheck-${SHELLCHECK_VERSION}/shellcheck" "$TOOLS_DIR/shellcheck"
+            fi
+            install -m 0755 "$TOOLS_DIR/shellcheck" "$BIN_DIR/shellcheck"
           fi
-          install -m 0755 "$TOOLS_DIR/shellcheck" "$BIN_DIR/shellcheck"
           shellcheck --version
 
           if [[ "${INSTALL_HADOLINT}" == "true" ]]; then
-            if [[ ! -x "$TOOLS_DIR/hadolint" ]]; then
-              HADOLINT_BASE="https://github.com/hadolint/hadolint/releases/download/${HADOLINT_VERSION}"
-              curl -fsSL --retry 3 --retry-delay 5 \
-                "${HADOLINT_BASE}/hadolint-Linux-x86_64" \
-                -o "$TOOLS_DIR/hadolint-Linux-x86_64"
-              curl -fsSL --retry 3 --retry-delay 5 \
-                "${HADOLINT_BASE}/hadolint-Linux-x86_64.sha256" \
-                -o /tmp/hadolint-Linux-x86_64.sha256
-              (cd "$TOOLS_DIR" && sha256sum -c /tmp/hadolint-Linux-x86_64.sha256)
-              mv "$TOOLS_DIR/hadolint-Linux-x86_64" "$TOOLS_DIR/hadolint"
-              chmod +x "$TOOLS_DIR/hadolint"
+            HADOLINT_BARE="${HADOLINT_VERSION#v}"
+            if [[ -x /usr/bin/hadolint ]] \
+              && /usr/bin/hadolint --version 2>/dev/null | grep -qwF "$HADOLINT_BARE"; then
+              install -m 0755 /usr/bin/hadolint "$BIN_DIR/hadolint"
+            else
+              if [[ ! -x "$TOOLS_DIR/hadolint" ]]; then
+                HADOLINT_BASE="https://github.com/hadolint/hadolint/releases/download/${HADOLINT_VERSION}"
+                curl -fsSL --retry 3 --retry-delay 5 \
+                  "${HADOLINT_BASE}/hadolint-Linux-x86_64" \
+                  -o "$TOOLS_DIR/hadolint-Linux-x86_64"
+                curl -fsSL --retry 3 --retry-delay 5 \
+                  "${HADOLINT_BASE}/hadolint-Linux-x86_64.sha256" \
+                  -o /tmp/hadolint-Linux-x86_64.sha256
+                (cd "$TOOLS_DIR" && sha256sum -c /tmp/hadolint-Linux-x86_64.sha256)
+                mv "$TOOLS_DIR/hadolint-Linux-x86_64" "$TOOLS_DIR/hadolint"
+                chmod +x "$TOOLS_DIR/hadolint"
+              fi
+              install -m 0755 "$TOOLS_DIR/hadolint" "$BIN_DIR/hadolint"
             fi
-            install -m 0755 "$TOOLS_DIR/hadolint" "$BIN_DIR/hadolint"
             hadolint --version
           fi
 
