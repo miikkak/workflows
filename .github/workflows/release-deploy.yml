@@ -11,8 +11,6 @@ on: # yamllint disable-line rule:truthy
     secrets:
       WEBHOOK_SECRET:
         required: false
-      DEPLOY_SERVERS:
-        required: false
 
 permissions:
   contents: read
@@ -21,7 +19,7 @@ permissions:
 # SHARED WORKFLOW - release-deploy.yml
 # ==============================================================================
 # Handles: HMAC-signed webhook delivery to DEPLOY_SERVERS after a release.
-# Skipped gracefully when WEBHOOK_SECRET or DEPLOY_SERVERS are not configured.
+# Skipped gracefully when WEBHOOK_SECRET or DEPLOY_SERVERS (repo variable) are not configured.
 #
 # Endpoint: https://<server>/hooks/deploy-<repo-name>
 # Payload:  {action, version, repository, tag_name}
@@ -61,12 +59,14 @@ jobs:
           # Calculate HMAC signature
           SIGNATURE=$(printf '%s' "$PAYLOAD" | openssl dgst -sha256 -hmac "$WEBHOOK_SECRET" | sed 's/^.* //')
 
-          # Send webhook to each server
+          # Send webhook to each server (DEPLOY_SERVERS is a newline-separated list)
           FAILED_SERVERS=""
           SUCCESS_COUNT=0
           TOTAL_SERVERS=0
+          mapfile -t servers <<< "$DEPLOY_SERVERS"
 
-          for server in $DEPLOY_SERVERS; do
+          for server in "${servers[@]}"; do
+            [[ -z "$server" ]] && continue
             ((++TOTAL_SERVERS))
             echo "📡 Sending webhook to $server..."
 

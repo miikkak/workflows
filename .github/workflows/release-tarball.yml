@@ -168,7 +168,7 @@ jobs:
             for d in bin sbin lib; do
               [[ -d "$d" ]] && dirs+=("$d")
             done
-            tar -czf "$TARBALL" "${dirs[@]}"
+            tar -czf "$TARBALL" --exclude='*.tar.gz' "${dirs[@]}"
           elif [[ -d "local-bin" || -d "local-sbin" ]]; then
             # local-bin/local-sbin → transform to bin/sbin layout
             echo "  📁 Structure: local-bin/local-sbin (transforming to bin/sbin)"
@@ -215,7 +215,7 @@ jobs:
     runs-on: [self-hosted, linux, x64]
     timeout-minutes: 10
     needs: build-artifacts
-    if: always() && needs.build-artifacts.result == 'success'
+    if: needs.build-artifacts.result == 'success'
     outputs:
       version: ${{ steps.version.outputs.new_version }}
 
