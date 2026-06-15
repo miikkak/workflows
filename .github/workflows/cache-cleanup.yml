@@ -7,6 +7,11 @@ on: # yamllint disable-line rule:truthy
     - cron: "0 2 * * 0"
   workflow_dispatch:
   workflow_call:
+    inputs:
+      runner:
+        description: Runner labels as a JSON array string (e.g. '["self-hosted","linux","x64"]')
+        type: string
+        default: '["self-hosted","linux","x64"]'
 
 permissions:
   actions: write
@@ -15,7 +20,7 @@ permissions:
 jobs:
   cleanup-caches:
     name: Clean Up Stale Caches
-    runs-on: ubuntu-slim
+    runs-on: ${{ fromJson(inputs.runner || '["self-hosted","linux","x64"]') }}
     timeout-minutes: 10
 
     steps:

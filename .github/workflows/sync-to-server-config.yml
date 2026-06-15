@@ -5,6 +5,10 @@ on: # yamllint disable-line rule:truthy
   workflow_dispatch:
   workflow_call:
     inputs:
+      runner:
+        description: Runner labels as a JSON array string (e.g. '["self-hosted","linux","x64"]')
+        type: string
+        default: '["self-hosted","linux","x64"]'
       source-name:
         description: Source repo name (e.g. nftables, email-server) — used in branch name, commit message, and PR title
         type: string
@@ -36,7 +40,7 @@ permissions:
 jobs:
   sync:
     name: Sync ${{ inputs.source-name }} files to server-config
-    runs-on: ubuntu-slim
+    runs-on: ${{ fromJson(inputs.runner || '["self-hosted","linux","x64"]') }}
     timeout-minutes: 10
 
     steps:
@@ -66,6 +70,7 @@ jobs:
           git checkout -B "$BRANCH" origin/main
 
       - name: Install rsync
+        if: runner.environment == 'github-hosted'
         run: |
           set -Eeuo pipefail
           sudo apt-get install -y --no-install-recommends rsync

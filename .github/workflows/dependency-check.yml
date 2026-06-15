@@ -4,6 +4,10 @@ name: Dependency Check
 on: # yamllint disable-line rule:truthy
   workflow_call:
     inputs:
+      runner:
+        description: Runner labels as a JSON array string (e.g. '["self-hosted","linux","x64"]')
+        type: string
+        default: '["self-hosted","linux","x64"]'
       config-file:
         description: Path to the dependency-checks config file in the calling repo
         default: .github/dependency-checks.yml
@@ -17,7 +21,7 @@ permissions:
 jobs:
   parse-config:
     name: Parse Config
-    runs-on: ubuntu-slim
+    runs-on: ${{ fromJson(inputs.runner || '["self-hosted","linux","x64"]') }}
     outputs:
       matrix: ${{ steps.parse.outputs.matrix }}
       has-checks: ${{ steps.parse.outputs.has-checks }}
@@ -28,14 +32,11 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v6
 
-      - name: Cache pip packages
-        uses: actions/cache@v5
-        with:
-          path: ~/.cache/pip
-          key: pip-pyyaml-${{ env.PYYAML_VERSION }}-${{ runner.os }}
-
       - name: Install pyyaml
-        run: pip install pyyaml==${{ env.PYYAML_VERSION }} -q
+        run: |
+          python3 -m venv "$RUNNER_TEMP/dep-check-venv"
+          "$RUNNER_TEMP/dep-check-venv/bin/pip" install "pyyaml==${{ env.PYYAML_VERSION }}" -q
+          echo "$RUNNER_TEMP/dep-check-venv/bin" >> "$GITHUB_PATH"
 
       - name: Parse dependency-checks config
         id: parse
@@ -75,7 +76,7 @@ jobs:
     name: Check ${{ matrix.name }}
     needs: parse-config
     if: needs.parse-config.outputs.has-checks == 'true'
-    runs-on: ubuntu-slim
+    runs-on: ${{ fromJson(inputs.runner || '["self-hosted","linux","x64"]') }}
     strategy:
       matrix: ${{ fromJson(needs.parse-config.outputs.matrix) }}
       fail-fast: false
