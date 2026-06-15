@@ -8,6 +8,10 @@ on: # yamllint disable-line rule:truthy
   workflow_dispatch:
   workflow_call:
     inputs:
+      runner:
+        description: Runner labels as a JSON array string (e.g. '["self-hosted","linux","x64"]')
+        type: string
+        default: '["self-hosted","linux","x64"]'
       python-version:
         description: Python version for pre-commit
         type: string
@@ -30,7 +34,7 @@ permissions:
 jobs:
   check-updates:
     name: Check Pre-commit Hook Updates
-    runs-on: ubuntu-slim
+    runs-on: ${{ fromJson(inputs.runner || '["self-hosted","linux","x64"]') }}
     timeout-minutes: 10
     env:
       HADOLINT_VERSION: v2.12.0
@@ -44,11 +48,13 @@ jobs:
           token: ${{ github.token }}
 
       - name: Set up Python
+        if: runner.environment == 'github-hosted'
         uses: actions/setup-python@v6
         with:
           python-version: "${{ env.PYTHON_VERSION }}"
 
       - name: Cache pre-commit environments
+        if: runner.environment == 'github-hosted'
         uses: actions/cache@v5
         with:
           path: ~/.cache/pre-commit
@@ -57,7 +63,7 @@ jobs:
             pre-commit-${{ runner.os }}-py${{ env.PYTHON_VERSION }}-
 
       - name: Install hadolint
-        if: env.INSTALL_HADOLINT == 'true'
+        if: env.INSTALL_HADOLINT == 'true' && runner.environment == 'github-hosted'
         run: |
           curl -fsSL --retry 3 --retry-delay 5 \
             "https://github.com/hadolint/hadolint/releases/download/${HADOLINT_VERSION}/hadolint-Linux-x86_64" \
@@ -70,6 +76,7 @@ jobs:
           hadolint --version
 
       - name: Install pre-commit
+        if: runner.environment == 'github-hosted'
         run: |
           pip install pre-commit
           pre-commit --version

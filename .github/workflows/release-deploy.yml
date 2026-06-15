@@ -1,0 +1,111 @@
+---
+name: Release Deploy
+
+on: # yamllint disable-line rule:truthy
+  workflow_call:
+    inputs:
+      version:
+        description: "Version tag to deploy (e.g. v1.2.3)"
+        required: true
+        type: string
+    secrets:
+      WEBHOOK_SECRET:
+        required: false
+
+permissions:
+  contents: read
+
+# ==============================================================================
+# SHARED WORKFLOW - release-deploy.yml
+# ==============================================================================
+# Handles: HMAC-signed webhook delivery to DEPLOY_SERVERS after a release.
+# Skipped gracefully when WEBHOOK_SECRET or DEPLOY_SERVERS (repo variable) are not configured.
+#
+# Endpoint: https://<server>/hooks/deploy-<repo-name>
+# Payload:  {action, version, repository, tag_name}
+# Signature: X-Hub-Signature-256: sha256=<HMAC-SHA256>
+# ==============================================================================
+
+jobs:
+  deploy:
+    name: Deploy Release
+    runs-on: [self-hosted, linux, x64]
+    timeout-minutes: 10
+
+    steps:
+      - name: Trigger webhook deployment
+        env:
+          WEBHOOK_SECRET: ${{ secrets.WEBHOOK_SECRET }}
+          DEPLOY_SERVERS: ${{ vars.DEPLOY_SERVERS }}
+          REPO_NAME: ${{ github.event.repository.name }}
+          REPO: ${{ github.repository }}
+          VERSION: ${{ inputs.version }}
+        run: |
+          if [[ -z "$WEBHOOK_SECRET" || -z "$DEPLOY_SERVERS" ]]; then
+            echo "⏭️  Skipping webhook deployment (WEBHOOK_SECRET or DEPLOY_SERVERS not configured)"
+            exit 0
+          fi
+
+          echo "🔔 Triggering webhook deployment..."
+
+          # Build JSON payload with jq to avoid injection and whitespace issues
+          PAYLOAD=$(jq -nc \
+            --arg action "deploy-${REPO_NAME}" \
+            --arg version "$VERSION" \
+            --arg repository "$REPO" \
+            --arg tag_name "$VERSION" \
+            '{action: $action, version: $version, repository: $repository, tag_name: $tag_name}')
+
+          # Calculate HMAC signature
+          SIGNATURE=$(printf '%s' "$PAYLOAD" | openssl dgst -sha256 -hmac "$WEBHOOK_SECRET" | sed 's/^.* //')
+
+          # Send webhook to each server (DEPLOY_SERVERS is a newline-separated list)
+          FAILED_SERVERS=""
+          SUCCESS_COUNT=0
+          TOTAL_SERVERS=0
+          mapfile -t servers <<< "$DEPLOY_SERVERS"
+
+          for server in "${servers[@]}"; do
+            [[ -z "$server" ]] && continue
+            ((++TOTAL_SERVERS))
+            echo "📡 Sending webhook to $server..."
+
+            RESPONSE=$(curl -L -s -w "\n%{http_code}" -X POST \
+              -H "Content-Type: application/json" \
+              -H "X-Hub-Signature-256: sha256=$SIGNATURE" \
+              --data "$PAYLOAD" \
+              "https://$server/hooks/deploy-${REPO_NAME}" 2>&1 || echo "000")
+
+            HTTP_CODE=$(echo "$RESPONSE" | tail -n1)
+            BODY=$(echo "$RESPONSE" | head -n-1)
+
+            if [[ "$HTTP_CODE" = "200" ]]; then
+              echo "  ✅ Webhook delivered to $server"
+              ((++SUCCESS_COUNT))
+            else
+              echo "  ❌ Webhook to $server FAILED with HTTP $HTTP_CODE"
+              echo "  Response: $BODY"
+              FAILED_SERVERS="$FAILED_SERVERS $server"
+            fi
+          done
+
+          echo ""
+          echo "📊 Webhook Deployment Summary:"
+          echo "   Total servers: $TOTAL_SERVERS"
+          echo "   Successful: $SUCCESS_COUNT"
+          echo "   Failed: $((TOTAL_SERVERS - SUCCESS_COUNT))"
+
+          if [[ -n "$FAILED_SERVERS" ]]; then
+            echo ""
+            echo "❌ Webhook deployment FAILED for:$FAILED_SERVERS"
+            echo ""
+            echo "Troubleshooting:"
+            echo "  - Check nginx configuration and IP allowlist on failed servers"
+            echo "  - Verify webhook daemon is running: rc-service webhook status"
+            echo "  - Check webhook logs: tail -f /var/log/webhook.log"
+            echo "  - Verify HMAC secret matches between GitHub and /etc/webhook.json"
+            exit 1
+          else
+            echo ""
+            echo "✅ All webhook deployments successful!"
+          fi

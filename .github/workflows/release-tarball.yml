@@ -1,0 +1,259 @@
+---
+name: Release Tarball
+
+on: # yamllint disable-line rule:truthy
+  workflow_call:
+    inputs:
+      tag:
+        description: "Tag to deploy (for workflow_dispatch passthrough; empty when triggered by tag push)"
+        required: false
+        type: string
+        default: ""
+    outputs:
+      version:
+        description: "The released version tag (e.g. v1.2.3)"
+        value: ${{ jobs.release.outputs.version }}
+
+permissions:
+  contents: write
+  packages: write
+
+# ==============================================================================
+# SHARED WORKFLOW - release-tarball.yml
+# ==============================================================================
+# Handles: tag validation → tarball build → GitHub Release creation.
+# Does NOT perform deployment — use release-deploy.yml for webhook delivery.
+#
+# Tarball structure auto-detected from repo layout:
+#   bin/sbin/lib dirs present  → pack only those directories
+#   local-bin/local-sbin dirs  → transform to bin/sbin layout in tarball
+#   otherwise                  → generic (exclude .git, .github, etc.)
+#
+# Callers: pass `tag` when triggered by workflow_dispatch (manual tag input),
+# leave empty when triggered by tag push (tag read from github.ref instead).
+# ==============================================================================
+
+jobs:
+  validate-tag-input:
+    name: Validate Tag Input
+    runs-on: [self-hosted, linux, x64]
+    timeout-minutes: 5
+    if: inputs.tag != ''
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Validate tag format and existence
+        env:
+          INPUT_TAG: ${{ inputs.tag }}
+        run: |
+          TAG="$INPUT_TAG"
+
+          echo "🔍 Validating tag: $TAG"
+
+          # Validate tag format (should start with 'v' and follow semver pattern)
+          if ! [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[a-zA-Z0-9.-]+)?(\+[a-zA-Z0-9.-]+)?$ ]]; then
+            echo "❌ Invalid tag format: $TAG"
+            echo "   Expected format: vX.Y.Z (e.g., v1.2.3, v1.0.0-beta.1)"
+            exit 1
+          fi
+
+          # Verify tag exists in repository
+          if ! git rev-parse --verify "refs/tags/$TAG" >/dev/null 2>&1; then
+            echo "❌ Tag does not exist: $TAG"
+            echo "   Available tags:"
+            git tag -l | tail -n 10
+            exit 1
+          fi
+
+          echo "✅ Tag validation passed: $TAG"
+
+  build-artifacts:
+    name: Build Release Artifacts
+    runs-on: [self-hosted, linux, x64]
+    timeout-minutes: 10
+    needs: validate-tag-input
+    if: |
+      always() &&
+      (needs.validate-tag-input.result == 'success' || needs.validate-tag-input.result == 'skipped')
+    outputs:
+      repo_name: ${{ steps.repo_info.outputs.repo_name }}
+      git_version: ${{ steps.repo_info.outputs.git_version }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ (inputs.tag != '' && inputs.tag) || github.ref }}
+          fetch-depth: 0
+
+      - name: Verify tag checkout
+        if: inputs.tag != ''
+        env:
+          INPUT_TAG: ${{ inputs.tag }}
+        run: |
+          TAG="$INPUT_TAG"
+          CURRENT_TAG=$(git describe --exact-match --tags HEAD 2>/dev/null || echo "")
+
+          if [[ "$CURRENT_TAG" != "$TAG" ]]; then
+            echo "❌ Tag verification failed!"
+            echo "   Expected: $TAG"
+            echo "   Current:  $CURRENT_TAG"
+            exit 1
+          fi
+
+          echo "✅ Successfully checked out tag: $TAG"
+
+      - name: Get repository info
+        id: repo_info
+        env:
+          REPO_NAME: ${{ github.event.repository.name }}
+          GH_SHA: ${{ github.sha }}
+        run: |
+          SHORT_SHA="${GH_SHA:0:7}"
+
+          # Get git version (tag or describe)
+          GIT_VERSION=$(git describe --tags --always 2>/dev/null || echo "dev-$SHORT_SHA")
+
+          # Get deployment date (ISO 8601)
+          DEPLOY_DATE=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+
+          {
+            echo "repo_name=$REPO_NAME"
+            echo "short_sha=$SHORT_SHA"
+            echo "git_version=$GIT_VERSION"
+            echo "deploy_date=$DEPLOY_DATE"
+          } >> "$GITHUB_OUTPUT"
+
+          echo "📦 Repository: $REPO_NAME"
+          echo "📦 Version: $GIT_VERSION"
+          echo "📦 Deploy date: $DEPLOY_DATE"
+
+      - name: Replace version placeholders
+        env:
+          GIT_VERSION: ${{ steps.repo_info.outputs.git_version }}
+          DEPLOY_DATE: ${{ steps.repo_info.outputs.deploy_date }}
+        run: |
+          echo "🔄 Replacing version placeholders..."
+
+          # Find and replace @GIT_VERSION@ placeholder
+          find . -type f -not -path "./.git/*" -exec grep -l "@GIT_VERSION@" {} \; | while read -r file; do
+            sed -i "s|@GIT_VERSION@|${GIT_VERSION}|g" "$file"
+            echo "  ✓ Updated $file (version)"
+          done
+
+          # Find and replace @DEPLOY_DATE@ placeholder
+          find . -type f -not -path "./.git/*" -exec grep -l "@DEPLOY_DATE@" {} \; | while read -r file; do
+            sed -i "s|@DEPLOY_DATE@|${DEPLOY_DATE}|g" "$file"
+            echo "  ✓ Updated $file (date)"
+          done
+
+          echo "✅ Version placeholder replacement complete"
+
+      - name: Create tarball
+        run: |
+          REPO_NAME="${{ steps.repo_info.outputs.repo_name }}"
+          GIT_VERSION="${{ steps.repo_info.outputs.git_version }}"
+          TARBALL="${REPO_NAME}-${GIT_VERSION}.tar.gz"
+
+          echo "📦 Creating tarball: $TARBALL"
+
+          # Detect repository structure and create appropriate tarball
+          if [[ -d "bin" || -d "sbin" || -d "lib" ]]; then
+            # bin/sbin/lib structure (e.g. scripts repo)
+            echo "  📁 Structure: bin/sbin/lib"
+            dirs=()
+            for d in bin sbin lib; do
+              [[ -d "$d" ]] && dirs+=("$d")
+            done
+            tar -czf "$TARBALL" --exclude='*.tar.gz' "${dirs[@]}"
+          elif [[ -d "local-bin" || -d "local-sbin" ]]; then
+            # local-bin/local-sbin → transform to bin/sbin layout
+            echo "  📁 Structure: local-bin/local-sbin (transforming to bin/sbin)"
+            STAGING=$(mktemp -d)
+            for src_dir in local-bin local-sbin local-lib; do
+              [[ -d "$src_dir" ]] || continue
+              dest_dir="${src_dir#local-}"
+              mkdir -p "$STAGING/$dest_dir"
+              cp -r "$src_dir/." "$STAGING/$dest_dir/"
+            done
+            tar -czf "$TARBALL" -C "$STAGING" .
+            rm -rf "$STAGING"
+          else
+            # Generic structure: tar everything excluding CI/dev files
+            echo "  📁 Structure: generic (excluding .git, .github, etc.)"
+            tar -czf "$TARBALL" \
+              --exclude='.git' \
+              --exclude='.github' \
+              --exclude='*.tar.gz' \
+              --exclude='.pre-commit-config.yaml' \
+              --exclude='__pycache__' \
+              --exclude='*.pyc' \
+              --exclude='.ruff_cache' \
+              --exclude='node_modules' \
+              --exclude='.pytest_cache' \
+              .
+          fi
+
+          TAR_SIZE=$(stat -c%s "$TARBALL" 2>/dev/null || stat -f%z "$TARBALL")
+          echo "✅ Created $TARBALL ($TAR_SIZE bytes)"
+          echo "📋 Version: $GIT_VERSION"
+
+          echo "tarball=$TARBALL" >> "$GITHUB_ENV"
+
+      - name: Upload tarball artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ steps.repo_info.outputs.repo_name }}-tarball
+          path: "*.tar.gz"
+          retention-days: 90
+
+  release:
+    name: Create GitHub Release
+    runs-on: [self-hosted, linux, x64]
+    timeout-minutes: 10
+    needs: build-artifacts
+    if: needs.build-artifacts.result == 'success'
+    outputs:
+      version: ${{ steps.version.outputs.new_version }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ (inputs.tag != '' && inputs.tag) || github.ref }}
+          fetch-depth: 0
+
+      - name: Get version
+        id: version
+        env:
+          INPUT_TAG: ${{ inputs.tag }}
+        run: |
+          # For manual dispatch, use the input tag directly
+          # For tag push (workflow_call with empty tag), extract from github.ref
+          if [[ -n "$INPUT_TAG" ]]; then
+            NEW_VERSION="$INPUT_TAG"
+          else
+            REF="${{ github.ref }}"
+            NEW_VERSION="${REF#refs/tags/}"
+          fi
+          echo "new_version=$NEW_VERSION" >> "$GITHUB_OUTPUT"
+          echo "🏷️  Release version: $NEW_VERSION"
+
+      - name: Download tarball artifact
+        uses: actions/download-artifact@v8
+        with:
+          name: ${{ github.event.repository.name }}-tarball
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v3
+        with:
+          tag_name: ${{ steps.version.outputs.new_version }}
+          name: Release ${{ steps.version.outputs.new_version }}
+          draft: false
+          prerelease: false
+          generate_release_notes: true
+          files: |
+            *.tar.gz
