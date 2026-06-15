@@ -31,6 +31,10 @@ on: # yamllint disable-line rule:truthy
         description: Options passed to shfmt (only used when validate-bash is true)
         type: string
         default: "-i 2 -ci"
+      runner:
+        description: Runner labels as a JSON array string (e.g. '["self-hosted","linux","x64"]')
+        type: string
+        default: '["self-hosted","linux","x64"]'
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -42,7 +46,7 @@ permissions:
 jobs:
   super-lint:
     name: Super-Linter
-    runs-on: self-hosted
+    runs-on: ${{ fromJson(inputs.runner || '["self-hosted","linux","x64"]') }}
     timeout-minutes: 10
 
     steps:

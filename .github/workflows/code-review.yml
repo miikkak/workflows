@@ -7,6 +7,11 @@ on: # yamllint disable-line rule:truthy
     branches: [main]
   workflow_dispatch:
   workflow_call:
+    inputs:
+      runner:
+        description: Runner labels as a JSON array string (e.g. '["self-hosted","linux","x64"]')
+        type: string
+        default: '["self-hosted","linux","x64"]'
 
 permissions:
   contents: read
@@ -16,7 +21,7 @@ permissions:
 jobs:
   review:
     name: Claude Code Review
-    runs-on: self-hosted
+    runs-on: ${{ fromJson(inputs.runner || '["self-hosted","linux","x64"]') }}
     if: github.event_name == 'workflow_call' || github.event.pull_request.draft == false
     timeout-minutes: 10
     env:
