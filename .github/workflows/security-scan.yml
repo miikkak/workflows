@@ -31,6 +31,18 @@ jobs:
         with:
           token: ${{ github.token }}
 
+      - name: Install Trivy
+        run: |
+          mkdir -p "$RUNNER_TEMP/trivy-bin"
+          gh release download v0.70.0 \
+            --repo aquasecurity/trivy \
+            --pattern "trivy_*_Linux-64bit.tar.gz" \
+            --output "$RUNNER_TEMP/trivy.tar.gz"
+          tar -xzf "$RUNNER_TEMP/trivy.tar.gz" -C "$RUNNER_TEMP/trivy-bin" trivy
+          echo "$RUNNER_TEMP/trivy-bin" >> "$GITHUB_PATH"
+        env:
+          GH_TOKEN: ${{ github.token }}
+
       - name: Run Trivy filesystem scanner (table output)
         uses: aquasecurity/trivy-action@v0.36.0
         with:
@@ -39,6 +51,7 @@ jobs:
           format: "table"
           severity: "CRITICAL,HIGH,MEDIUM"
           exit-code: "0" # Don't fail the workflow, just report
+          skip-setup-trivy: true
 
       - name: Run Trivy filesystem scanner (JSON output)
         uses: aquasecurity/trivy-action@v0.36.0
@@ -49,6 +62,7 @@ jobs:
           output: "trivy-fs-results.json"
           severity: "CRITICAL,HIGH"
           exit-code: "0" # Don't fail the workflow, just report
+          skip-setup-trivy: true
 
       - name: Check for vulnerabilities and create issue
         if: github.event_name == 'schedule'
@@ -152,6 +166,7 @@ jobs:
           format: "table"
           severity: "CRITICAL"
           exit-code: "1"
+          skip-setup-trivy: true
 
   config-scan:
     name: Trivy Config Scan
@@ -166,6 +181,18 @@ jobs:
         with:
           token: ${{ github.token }}
 
+      - name: Install Trivy
+        run: |
+          mkdir -p "$RUNNER_TEMP/trivy-bin"
+          gh release download v0.70.0 \
+            --repo aquasecurity/trivy \
+            --pattern "trivy_*_Linux-64bit.tar.gz" \
+            --output "$RUNNER_TEMP/trivy.tar.gz"
+          tar -xzf "$RUNNER_TEMP/trivy.tar.gz" -C "$RUNNER_TEMP/trivy-bin" trivy
+          echo "$RUNNER_TEMP/trivy-bin" >> "$GITHUB_PATH"
+        env:
+          GH_TOKEN: ${{ github.token }}
+
       - name: Run Trivy config scanner
         uses: aquasecurity/trivy-action@v0.36.0
         with:
@@ -173,6 +200,7 @@ jobs:
           scan-ref: "."
           format: "table"
           exit-code: "0" # Don't fail the workflow, just report
+          skip-setup-trivy: true
 
   container-scan:
     name: Trivy Container Scan
