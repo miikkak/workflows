@@ -79,6 +79,8 @@ jobs:
     strategy:
       matrix: ${{ fromJson(needs.parse-config.outputs.matrix) }}
       fail-fast: false
+    env:
+      CRANE_VERSION: "0.20.2"
 
     steps:
       - name: Checkout code
@@ -86,9 +88,11 @@ jobs:
 
       # ── docker-digest handler ──────────────────────────────────────────────
 
-      - name: Set up Docker Buildx
+      - name: Install crane
         if: matrix.type == 'docker-digest'
-        uses: docker/setup-buildx-action@v4
+        run: |
+          curl -sL "https://github.com/google/go-containerregistry/releases/download/v${CRANE_VERSION}/go-containerregistry_Linux_x86_64.tar.gz" \
+            | tar -xz -C "$HOME/.local/bin" crane
 
       - name: Check docker digest
         if: matrix.type == 'docker-digest'
@@ -126,10 +130,9 @@ jobs:
           fi
           echo "current=$STORED_DIGEST" >> "$GITHUB_OUTPUT"
 
-          # Get the latest digest from the registry
-          LATEST_DIGEST=$(docker buildx imagetools inspect "$FULL_IMAGE" \
-            --format '{{.Manifest.Digest}}' 2>/dev/null \
-            | grep -m1 '^sha256:' || echo "unknown")
+          # Get the latest digest from the registry (crane talks to the registry HTTP API
+          # directly — no Docker daemon needed, compatible with ubuntu-slim)
+          LATEST_DIGEST=$(crane digest "$FULL_IMAGE" 2>/dev/null || echo "unknown")
           echo "latest=$LATEST_DIGEST" >> "$GITHUB_OUTPUT"
           echo "📦 Latest registry digest: $LATEST_DIGEST"
 
