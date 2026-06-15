@@ -22,7 +22,7 @@ concurrency:
   cancel-in-progress: false
 
 permissions:
-  contents: read
+  contents: write
   issues: write
   pull-requests: write
   actions: write
@@ -96,7 +96,7 @@ jobs:
         if: steps.check.outputs.updates_available == 'true'
         uses: actions/github-script@v9
         with:
-          github-token: ${{ secrets.PULL_REQUEST_TOKEN }}
+          github-token: ${{ secrets.PULL_REQUEST_TOKEN || github.token }}
           script: |
             const fs = require('fs');
             const { execSync } = require('child_process');
