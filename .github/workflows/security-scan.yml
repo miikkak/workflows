@@ -19,7 +19,7 @@ permissions:
 jobs:
   filesystem-scan:
     name: Trivy Filesystem Scan
-    runs-on: ubuntu-slim
+    runs-on: self-hosted
     timeout-minutes: 15
     permissions:
       contents: read
@@ -155,7 +155,7 @@ jobs:
 
   config-scan:
     name: Trivy Config Scan
-    runs-on: ubuntu-slim
+    runs-on: self-hosted
     timeout-minutes: 10
     permissions:
       contents: read
@@ -181,7 +181,6 @@ jobs:
     permissions:
       contents: read
       issues: write
-      actions: write
 
     steps:
       - name: Checkout code
@@ -209,10 +208,6 @@ jobs:
           context: .
           load: true
           tags: ${{ github.event.repository.name }}:scan
-          cache-from: |
-            type=gha,scope=${{ github.ref }}
-            type=gha,scope=refs/heads/main
-          cache-to: type=gha,mode=max,scope=${{ github.ref }}
 
       - name: Run Trivy container scanner (table output)
         if: steps.check_dockerfile.outputs.has_dockerfile == 'true'
