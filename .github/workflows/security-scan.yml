@@ -7,6 +7,11 @@ on: # yamllint disable-line rule:truthy
     - cron: "0 3 * * 1"
   workflow_dispatch:
   workflow_call:
+    inputs:
+      runner:
+        description: Runner labels as a JSON array string (e.g. '["self-hosted","linux","x64"]')
+        type: string
+        default: '["self-hosted","linux","x64"]'
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -19,7 +24,7 @@ permissions:
 jobs:
   filesystem-scan:
     name: Trivy Filesystem Scan
-    runs-on: self-hosted
+    runs-on: ${{ fromJson(inputs.runner || '["self-hosted","linux","x64"]') }}
     timeout-minutes: 15
     permissions:
       contents: read
@@ -170,7 +175,7 @@ jobs:
 
   config-scan:
     name: Trivy Config Scan
-    runs-on: self-hosted
+    runs-on: ${{ fromJson(inputs.runner || '["self-hosted","linux","x64"]') }}
     timeout-minutes: 10
     permissions:
       contents: read
