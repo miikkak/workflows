@@ -184,7 +184,8 @@ jobs:
           else
             # Generic structure: tar everything excluding CI/dev files
             echo "  📁 Structure: generic (excluding .git, .github, etc.)"
-            tar -czf "$TARBALL" \
+            TMPDIR_TAR=$(mktemp -d)
+            tar -czf "$TMPDIR_TAR/$TARBALL" \
               --exclude='.git' \
               --exclude='.github' \
               --exclude='*.tar.gz' \
@@ -195,6 +196,8 @@ jobs:
               --exclude='node_modules' \
               --exclude='.pytest_cache' \
               .
+            mv "$TMPDIR_TAR/$TARBALL" "$TARBALL"
+            rm -rf "$TMPDIR_TAR"
           fi
 
           TAR_SIZE=$(stat -c%s "$TARBALL" 2>/dev/null || stat -f%z "$TARBALL")
