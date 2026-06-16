@@ -46,6 +46,17 @@ jobs:
             exit 0
           fi
 
+          if [[ -z "$VERSION" ]]; then
+            echo "❌ VERSION is empty — release-tarball.yml likely did not produce a version output"
+            echo "   Check that the 'Create GitHub Release' job ran and was not skipped"
+            exit 1
+          fi
+
+          if ! [[ "$VERSION" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "❌ VERSION '$VERSION' does not match expected semver format (vX.Y.Z)"
+            exit 1
+          fi
+
           echo "🔔 Triggering webhook deployment..."
 
           # Build JSON payload with jq to avoid injection and whitespace issues
