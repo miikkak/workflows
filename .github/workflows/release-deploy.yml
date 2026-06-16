@@ -52,7 +52,7 @@ jobs:
             exit 1
           fi
 
-          if ! [[ "$VERSION" =~ ^v[0-9]+\.[0-9]+\.[0-9]+ ]]; then
+          if ! [[ "$VERSION" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
             echo "❌ VERSION '$VERSION' does not match expected semver format (vX.Y.Z)"
             exit 1
           fi
