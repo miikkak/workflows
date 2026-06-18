@@ -165,7 +165,7 @@ jobs:
             # bin/sbin/lib structure (e.g. scripts repo)
             echo "  📁 Structure: bin/sbin/lib"
             dirs=()
-            for d in bin sbin lib; do
+            for d in bin sbin lib init.d; do
               [[ -d "$d" ]] && dirs+=("$d")
             done
             tar -czf "$TARBALL" --exclude='*.tar.gz' "${dirs[@]}"
