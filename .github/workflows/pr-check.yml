@@ -17,9 +17,9 @@ on: # yamllint disable-line rule:truthy
         type: boolean
         default: true
       runner:
-        description: Runner labels as a JSON array string (e.g. '["self-hosted","linux","x64"]')
+        description: Runner labels as a JSON array string (e.g. '["self-hosted","linux","generic"]')
         type: string
-        default: '["self-hosted","linux","x64"]'
+        default: '["self-hosted","linux","generic"]'
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -32,7 +32,7 @@ permissions:
 jobs:
   pre-commit:
     name: pre-commit
-    runs-on: ${{ fromJson(inputs.runner || '["self-hosted","linux","x64"]') }}
+    runs-on: ${{ fromJson(inputs.runner || '["self-hosted","linux","generic"]') }}
     timeout-minutes: 10
     env:
       SHELLCHECK_VERSION: v0.10.0

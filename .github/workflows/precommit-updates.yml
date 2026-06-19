@@ -9,9 +9,9 @@ on: # yamllint disable-line rule:truthy
   workflow_call:
     inputs:
       runner:
-        description: Runner labels as a JSON array string (e.g. '["self-hosted","linux","x64"]')
+        description: Runner labels as a JSON array string (e.g. '["self-hosted","linux","generic"]')
         type: string
-        default: '["self-hosted","linux","x64"]'
+        default: '["self-hosted","linux","generic"]'
       python-version:
         description: Python version for pre-commit
         type: string
@@ -34,7 +34,7 @@ permissions:
 jobs:
   check-updates:
     name: Check Pre-commit Hook Updates
-    runs-on: ${{ fromJson(inputs.runner || '["self-hosted","linux","x64"]') }}
+    runs-on: ${{ fromJson(inputs.runner || '["self-hosted","linux","generic"]') }}
     timeout-minutes: 10
     env:
       HADOLINT_VERSION: v2.12.0

@@ -32,9 +32,9 @@ on: # yamllint disable-line rule:truthy
         type: string
         default: "-i 2 -ci"
       runner:
-        description: Runner labels as a JSON array string (e.g. '["self-hosted","linux","x64"]')
+        description: Runner labels as a JSON array string (e.g. '["self-hosted","linux","generic"]')
         type: string
-        default: '["self-hosted","linux","x64"]'
+        default: '["self-hosted","linux","generic"]'
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -46,7 +46,7 @@ permissions:
 jobs:
   super-lint:
     name: Super-Linter
-    runs-on: ${{ fromJson(inputs.runner || '["self-hosted","linux","x64"]') }}
+    runs-on: ${{ fromJson(inputs.runner || '["self-hosted","linux","generic"]') }}
     timeout-minutes: 10
 
     steps:

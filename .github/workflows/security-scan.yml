@@ -9,9 +9,9 @@ on: # yamllint disable-line rule:truthy
   workflow_call:
     inputs:
       runner:
-        description: Runner labels as a JSON array string (e.g. '["self-hosted","linux","x64"]')
+        description: Runner labels as a JSON array string (e.g. '["self-hosted","linux","generic"]')
         type: string
-        default: '["self-hosted","linux","x64"]'
+        default: '["self-hosted","linux","generic"]'
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -24,7 +24,7 @@ permissions:
 jobs:
   filesystem-scan:
     name: Trivy Filesystem Scan
-    runs-on: ${{ fromJson(inputs.runner || '["self-hosted","linux","x64"]') }}
+    runs-on: ${{ fromJson(inputs.runner || '["self-hosted","linux","generic"]') }}
     timeout-minutes: 15
     permissions:
       contents: read
@@ -175,7 +175,7 @@ jobs:
 
   config-scan:
     name: Trivy Config Scan
-    runs-on: ${{ fromJson(inputs.runner || '["self-hosted","linux","x64"]') }}
+    runs-on: ${{ fromJson(inputs.runner || '["self-hosted","linux","generic"]') }}
     timeout-minutes: 10
     permissions:
       contents: read
