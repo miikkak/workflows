@@ -36,7 +36,7 @@ permissions:
 jobs:
   validate-tag-input:
     name: Validate Tag Input
-    runs-on: [self-hosted, linux, x64]
+    runs-on: [self-hosted, linux, generic]
     timeout-minutes: 5
     if: inputs.tag != ''
     steps:
@@ -72,7 +72,7 @@ jobs:
 
   build-artifacts:
     name: Build Release Artifacts
-    runs-on: [self-hosted, linux, x64]
+    runs-on: [self-hosted, linux, generic]
     timeout-minutes: 10
     needs: validate-tag-input
     if: |
@@ -215,7 +215,7 @@ jobs:
 
   release:
     name: Create GitHub Release
-    runs-on: [self-hosted, linux, x64]
+    runs-on: [self-hosted, linux, generic]
     timeout-minutes: 10
     needs: build-artifacts
     if: |

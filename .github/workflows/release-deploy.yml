@@ -29,7 +29,7 @@ permissions:
 jobs:
   deploy:
     name: Deploy Release
-    runs-on: [self-hosted, linux, x64]
+    runs-on: [self-hosted, linux, generic]
     timeout-minutes: 10
 
     steps:

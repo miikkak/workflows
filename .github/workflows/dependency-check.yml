@@ -5,9 +5,9 @@ on: # yamllint disable-line rule:truthy
   workflow_call:
     inputs:
       runner:
-        description: Runner labels as a JSON array string (e.g. '["self-hosted","linux","x64"]')
+        description: Runner labels as a JSON array string (e.g. '["self-hosted","linux","generic"]')
         type: string
-        default: '["self-hosted","linux","x64"]'
+        default: '["self-hosted","linux","generic"]'
       config-file:
         description: Path to the dependency-checks config file in the calling repo
         default: .github/dependency-checks.yml
@@ -21,7 +21,7 @@ permissions:
 jobs:
   parse-config:
     name: Parse Config
-    runs-on: ${{ fromJson(inputs.runner || '["self-hosted","linux","x64"]') }}
+    runs-on: ${{ fromJson(inputs.runner || '["self-hosted","linux","generic"]') }}
     outputs:
       matrix: ${{ steps.parse.outputs.matrix }}
       has-checks: ${{ steps.parse.outputs.has-checks }}
@@ -76,7 +76,7 @@ jobs:
     name: Check ${{ matrix.name }}
     needs: parse-config
     if: needs.parse-config.outputs.has-checks == 'true'
-    runs-on: ${{ fromJson(inputs.runner || '["self-hosted","linux","x64"]') }}
+    runs-on: ${{ fromJson(inputs.runner || '["self-hosted","linux","generic"]') }}
     strategy:
       matrix: ${{ fromJson(needs.parse-config.outputs.matrix) }}
       fail-fast: false

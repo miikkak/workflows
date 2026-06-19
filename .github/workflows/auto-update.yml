@@ -18,7 +18,7 @@ permissions:
 jobs:
   detect-updates:
     name: Detect Available Updates
-    runs-on: [self-hosted, linux, x64]
+    runs-on: [self-hosted, linux, generic]
     timeout-minutes: 15
     outputs:
       has_updates: ${{ steps.check.outputs.has_updates }}
@@ -178,7 +178,7 @@ jobs:
 
   apply-updates:
     name: Apply Updates
-    runs-on: [self-hosted, linux, x64]
+    runs-on: [self-hosted, linux, generic]
     timeout-minutes: 10
     needs: detect-updates
     if: needs.detect-updates.outputs.has_updates == 'true'
@@ -274,7 +274,7 @@ jobs:
 
   skip-notification:
     name: No Updates Available
-    runs-on: [self-hosted, linux, x64]
+    runs-on: [self-hosted, linux, generic]
     timeout-minutes: 5
     needs: detect-updates
     if: needs.detect-updates.outputs.has_updates == 'false'
