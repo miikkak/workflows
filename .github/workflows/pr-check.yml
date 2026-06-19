@@ -42,7 +42,7 @@ jobs:
       INSTALL_HADOLINT: ${{ inputs.install-hadolint == false && 'false' || 'true' }}
     steps:
       - name: Checkout code
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           fetch-depth: 0
 
