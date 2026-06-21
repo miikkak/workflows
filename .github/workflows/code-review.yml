@@ -303,7 +303,7 @@ jobs:
           if last_line not in ("VERDICT: PASS", "VERDICT: ISSUES"):
               print(f"Warning: unexpected verdict line {last_line!r} — defaulting to COMMENT")
           has_must_fix = last_line == "VERDICT: ISSUES"
-          event = "REQUEST_CHANGES" if has_must_fix else "COMMENT"
+          event = "REQUEST_CHANGES" if has_must_fix else "APPROVE"
 
           full_body = f"## Claude Code Review\n<!-- reviewed-sha: {head_sha} -->\n\n{review_text}"
           try:
