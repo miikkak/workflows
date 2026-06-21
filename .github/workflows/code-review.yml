@@ -147,7 +147,21 @@ jobs:
                       consider_lines.append(line)
               return '\n'.join(consider_lines).strip()
 
-          def review(diff, prior_consider_blocks):
+          def extract_must_fix_items(body):
+              lines = body.split('\n')
+              must_fix_lines = []
+              in_must_fix = False
+              for line in lines:
+                  if line.strip() == '### MUST FIX':
+                      in_must_fix = True
+                      continue
+                  if in_must_fix:
+                      if line.startswith('VERDICT:') or line.startswith('### '):
+                          break
+                      must_fix_lines.append(line)
+              return '\n'.join(must_fix_lines).strip()
+
+          def review(diff, prior_consider_blocks, prior_must_fix_blocks):
               client = anthropic.Anthropic(max_retries=3)
               system_prompt = (
                   "You are a code reviewer for a personal infrastructure and tooling repository "
@@ -198,6 +212,17 @@ jobs:
                   "Use VERDICT: PASS when there are no MUST FIX items, even if CONSIDER items exist."
               )
               user_content = f"Review this diff:\n\n```diff\n{diff[:60000]}\n```"
+              if prior_must_fix_blocks:
+                  combined = '\n\n---\n\n'.join(prior_must_fix_blocks)
+                  user_content += (
+                      "\n\n---\n\nThe following MUST FIX items were raised in previous review "
+                      "rounds on this PR. The new commits are likely addressing these. For each "
+                      "item, check the diff carefully and explicitly confirm whether it is now "
+                      "resolved or still present. If an item is fully resolved, do not re-raise "
+                      "it. If it is still present or only partially fixed, include it under "
+                      "MUST FIX with a note that it was previously flagged and remains:\n\n"
+                      + combined
+                  )
               if prior_consider_blocks:
                   combined = '\n\n---\n\n'.join(prior_consider_blocks)
                   user_content += (
@@ -292,18 +317,24 @@ jobs:
               print("Empty diff, skipping review")
               sys.exit(0)
 
+          # Collect prior MUST FIX items so Claude can verify they were resolved
+          prior_must_fix_blocks = [
+              m for r in prior_reviews_sorted
+              if (m := extract_must_fix_items(r.get('body', '')))
+          ]
+
           # Collect all prior CONSIDER items so Claude doesn't repeat them
           prior_consider_blocks = [
               c for r in prior_reviews_sorted
               if (c := extract_consider_items(r.get('body', '')))
           ]
 
-          review_text = review(diff, prior_consider_blocks)
+          review_text = review(diff, prior_consider_blocks, prior_must_fix_blocks)
           last_line = review_text.strip().splitlines()[-1].strip()
           if last_line not in ("VERDICT: PASS", "VERDICT: ISSUES"):
               print(f"Warning: unexpected verdict line {last_line!r} — defaulting to COMMENT")
           has_must_fix = last_line == "VERDICT: ISSUES"
-          event = "REQUEST_CHANGES" if has_must_fix else "COMMENT"
+          event = "REQUEST_CHANGES" if has_must_fix else "APPROVE"
 
           full_body = f"## Claude Code Review\n<!-- reviewed-sha: {head_sha} -->\n\n{review_text}"
           try:
