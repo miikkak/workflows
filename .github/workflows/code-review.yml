@@ -280,7 +280,7 @@ jobs:
           pr_actor = os.environ.get('PR_ACTOR', '')
           pr_head_ref = os.environ.get('PR_HEAD_REF', '')
           dependency_actors = {'renovate[bot]', 'dependabot[bot]'}
-          dependency_prefixes = ('renovate/', 'dependabot/')
+          dependency_prefixes = ('renovate/', 'dependabot/', 'auto-update/')
           if pr_actor in dependency_actors or pr_head_ref.startswith(dependency_prefixes):
               print(f"Skipping review: dependency update PR by {pr_actor!r} on branch {pr_head_ref!r}")
               sys.exit(0)
