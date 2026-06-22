@@ -112,7 +112,7 @@ jobs:
               owner: context.repo.owner,
               repo: context.repo.repo,
               state: 'open',
-              head: `${context.repo.owner}:chore/update-pre-commit-hooks`
+              head: `${context.repo.owner}:auto-update/update-pre-commit-hooks`
             });
 
             if (prs.data.length > 0) {
@@ -120,7 +120,7 @@ jobs:
               return;
             }
 
-            const branchName = 'chore/update-pre-commit-hooks';
+            const branchName = 'auto-update/update-pre-commit-hooks';
 
             try {
               const { data: ref } = await github.rest.git.getRef({
@@ -249,10 +249,10 @@ jobs:
                   '',
                   '3. Commit and push:',
                   '   ```bash',
-                  '   git checkout -b chore/update-pre-commit-hooks',
+                  '   git checkout -b auto-update/update-pre-commit-hooks',
                   '   git add .pre-commit-config.yaml',
                   '   git commit -m "chore: update pre-commit hook versions"',
-                  '   git push origin chore/update-pre-commit-hooks',
+                  '   git push origin auto-update/update-pre-commit-hooks',
                   '   ```',
                   '',
                   '4. Create a PR and add the `release:patch` label.',
