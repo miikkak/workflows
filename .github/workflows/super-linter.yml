@@ -90,6 +90,7 @@ jobs:
             [[ -n "${!v:-}" ]] && podman_env+=(-e "${v}=${!v}")
           done
           podman run --rm \
+            --network=none \
             -e RUN_LOCAL=true \
             -e DEFAULT_WORKSPACE=/tmp/lint \
             -e LINTER_RULES_PATH=. \
