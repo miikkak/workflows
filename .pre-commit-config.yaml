@@ -101,7 +101,7 @@ repos:
         entry: >-
           superlinter
           VALIDATE_ALL_CODEBASE=true
-          LINTER_RULES_PATH=.
+          LINTER_RULES_PATH=.github
           VALIDATE_BASH=true
           VALIDATE_SHELL_SHFMT=true
           BASH_EXEC_IGNORE_LIBRARIES=true
