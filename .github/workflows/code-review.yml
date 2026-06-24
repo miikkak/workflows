@@ -79,12 +79,41 @@ jobs:
 
           import anthropic
 
+          DIFF_MAX_CHARS = 60_000
+          FILE_CONTEXT_BUDGET = 30_000
+          FILE_CONTEXT_MAX_PER_FILE = 15_000
+
           def get_diff(from_sha, to_sha):
               result = subprocess.run(
                   ['git', 'diff', from_sha, to_sha],
                   capture_output=True, text=True, check=True
               )
               return result.stdout
+
+          def get_changed_files(from_sha, to_sha):
+              result = subprocess.run(
+                  ['git', 'diff', '--name-only', from_sha, to_sha],
+                  capture_output=True, text=True, check=True
+              )
+              paths = [p for p in result.stdout.splitlines() if p and os.path.isfile(p)]
+              return paths
+
+          def read_file_contexts(paths):
+              parts = []
+              remaining = FILE_CONTEXT_BUDGET
+              for path in paths:
+                  if remaining <= 0:
+                      break
+                  try:
+                      with open(path, encoding='utf-8', errors='strict') as fh:
+                          content = fh.read(FILE_CONTEXT_MAX_PER_FILE)
+                  except (UnicodeDecodeError, OSError):
+                      continue
+                  if len(content) > remaining:
+                      content = content[:remaining]
+                  parts.append(f"### {path}\n```\n{content}\n```")
+                  remaining -= len(content)
+              return '\n\n'.join(parts)
 
           def is_ancestor(ancestor_sha, descendant_sha):
               result = subprocess.run(
@@ -161,7 +190,7 @@ jobs:
                       must_fix_lines.append(line)
               return '\n'.join(must_fix_lines).strip()
 
-          def review(diff, prior_consider_blocks, prior_must_fix_blocks):
+          def review(diff, prior_consider_blocks, prior_must_fix_blocks, file_context=''):
               client = anthropic.Anthropic(max_retries=3)
               system_prompt = (
                   "You are a code reviewer for a personal infrastructure and tooling repository "
@@ -211,7 +240,15 @@ jobs:
                   "Use VERDICT: ISSUES only when there are items under MUST FIX. "
                   "Use VERDICT: PASS when there are no MUST FIX items, even if CONSIDER items exist."
               )
-              user_content = f"Review this diff:\n\n```diff\n{diff[:60000]}\n```"
+              user_content = f"Review this diff:\n\n```diff\n{diff[:DIFF_MAX_CHARS]}\n```"
+              if file_context:
+                  user_content += (
+                      "\n\n---\n\nFull contents of the modified files are provided below for "
+                      "additional context. Focus your review on the diff above; consult this "
+                      "only when you need to understand surrounding code or existing patterns. "
+                      "Do not review unchanged code — only flag issues introduced by the diff.\n\n"
+                      + file_context
+                  )
               if prior_must_fix_blocks:
                   combined = '\n\n---\n\n'.join(prior_must_fix_blocks)
                   user_content += (
@@ -329,7 +366,9 @@ jobs:
               if (c := extract_consider_items(r.get('body', '')))
           ]
 
-          review_text = review(diff, prior_consider_blocks, prior_must_fix_blocks)
+          changed_files = get_changed_files(from_sha, head_sha)
+          file_context = read_file_contexts(changed_files)
+          review_text = review(diff, prior_consider_blocks, prior_must_fix_blocks, file_context)
           last_line = review_text.strip().splitlines()[-1].strip()
           if last_line not in ("VERDICT: PASS", "VERDICT: ISSUES"):
               print(f"Warning: unexpected verdict line {last_line!r} — defaulting to COMMENT")
