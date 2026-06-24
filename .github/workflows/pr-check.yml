@@ -72,7 +72,7 @@ jobs:
       - name: Cache tool binaries
         id: cache-tools
         if: runner.environment == 'github-hosted'
-        uses: actions/cache@v5
+        uses: actions/cache@v6
         with:
           path: ~/.cache/tools
           key: ${{ env.TOOLS_CACHE_KEY }}
@@ -147,7 +147,7 @@ jobs:
 
       - name: Cache pre-commit environments
         if: runner.environment == 'github-hosted'
-        uses: actions/cache@v5
+        uses: actions/cache@v6
         with:
           path: ~/.cache/pre-commit
           key: pre-commit-${{ runner.os }}-py${{ env.PYTHON_VERSION }}-${{ hashFiles('.pre-commit-config.yaml') }}
