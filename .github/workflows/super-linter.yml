@@ -93,7 +93,7 @@ jobs:
             --network=none \
             -e RUN_LOCAL=true \
             -e DEFAULT_WORKSPACE=/tmp/lint \
-            -e LINTER_RULES_PATH=. \
+            -e LINTER_RULES_PATH=.github \
             -e DEFAULT_BRANCH=main \
             -e YAML_LINTER_RULES=.yamllint \
             -e MARKDOWN_LINTER_RULES=.markdownlint.json \
