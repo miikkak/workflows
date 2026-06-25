@@ -141,10 +141,10 @@ jobs:
                   -o "${HADOLINT_CACHE}"
                 curl -fsSL --retry 3 --retry-delay 5 \
                   "${HADOLINT_BASE}/hadolint-Linux-${HADOLINT_ARCH}.sha256" \
-                  -o /tmp/hadolint-Linux-${HADOLINT_ARCH}.sha256
+                  -o "/tmp/hadolint-Linux-${HADOLINT_ARCH}.sha256"
                 (cd "$TOOLS_DIR" \
                   && sed "s|hadolint-Linux-${HADOLINT_ARCH}|hadolint-${HADOLINT_VERSION}-${HOST_ARCH}|" \
-                    /tmp/hadolint-Linux-${HADOLINT_ARCH}.sha256 \
+                    "/tmp/hadolint-Linux-${HADOLINT_ARCH}.sha256" \
                   | sha256sum -c)
                 chmod +x "${HADOLINT_CACHE}"
               fi
