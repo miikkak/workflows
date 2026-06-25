@@ -36,7 +36,6 @@ jobs:
     timeout-minutes: 10
     env:
       SHELLCHECK_VERSION: v0.10.0
-      SHELLCHECK_SHA256: 6c881ab0698e4e6ea235245f22832860544f17ba386442fe7e9d629f8cbedf87
       HADOLINT_VERSION: v2.12.0
       PYTHON_VERSION: ${{ inputs.python-version || '3.14' }}
       INSTALL_HADOLINT: ${{ inputs.install-hadolint == false && 'false' || 'true' }}
@@ -66,7 +65,7 @@ jobs:
         run: |
           hadolint_part=""
           [[ "${INSTALL_HADOLINT}" == "true" ]] && hadolint_part="-hadolint-${HADOLINT_VERSION}"
-          echo "TOOLS_CACHE_KEY=tools-shellcheck-${SHELLCHECK_VERSION}${hadolint_part}-${{ runner.os }}" \
+          echo "TOOLS_CACHE_KEY=tools-shellcheck-${SHELLCHECK_VERSION}${hadolint_part}-${{ runner.os }}-$(uname -m)" \
             >> "$GITHUB_ENV"
 
       - name: Cache tool binaries
@@ -90,29 +89,44 @@ jobs:
           # binaries, so copying them locally avoids a redundant network
           # download. Fall back to a pinned download (cached in ~/.cache/tools)
           # when the system binary is absent or version-mismatched, e.g. on
-          # github-hosted runners. The download guard is the cached file existing
-          # — self-healing if the cache action reports a hit but restores nothing.
+          # github-hosted runners or runners of a different arch. The download
+          # guard is the cached file existing — self-healing if the cache action
+          # reports a hit but restores nothing.
           TOOLS_DIR="$HOME/.cache/tools"
           BIN_DIR="$HOME/.local/bin"
           mkdir -p "$TOOLS_DIR" "$BIN_DIR"
           echo "$BIN_DIR" >> "$GITHUB_PATH"
           export PATH="$BIN_DIR:$PATH"
 
+          # Detect host architecture for downloading arch-native binaries
+          HOST_ARCH="$(uname -m)"
+          # Map uname -m to hadolint's arch naming (aarch64 → arm64, else passthrough)
+          case "${HOST_ARCH}" in
+            aarch64) HADOLINT_ARCH="arm64" ;;
+            *)       HADOLINT_ARCH="${HOST_ARCH}" ;;
+          esac
+
           SHELLCHECK_BARE="${SHELLCHECK_VERSION#v}"
           if [[ -x /usr/bin/shellcheck ]] \
             && /usr/bin/shellcheck --version 2>/dev/null | grep -qwF "$SHELLCHECK_BARE"; then
             install -m 0755 /usr/bin/shellcheck "$BIN_DIR/shellcheck"
           else
-            if [[ ! -x "$TOOLS_DIR/shellcheck" ]]; then
-              SHELLCHECK_ARCHIVE="shellcheck-${SHELLCHECK_VERSION}.linux.x86_64.tar.xz"
+            # Cache key includes arch so x86_64 and aarch64 runners don't share binaries
+            SHELLCHECK_CACHE="$TOOLS_DIR/shellcheck-${SHELLCHECK_VERSION}-${HOST_ARCH}"
+            if [[ ! -x "${SHELLCHECK_CACHE}" ]]; then
+              SHELLCHECK_ARCHIVE="shellcheck-${SHELLCHECK_VERSION}.linux.${HOST_ARCH}.tar.xz"
+              SHELLCHECK_BASE="https://github.com/koalaman/shellcheck/releases/download/${SHELLCHECK_VERSION}"
               curl -fsSL --retry 3 --retry-delay 5 \
-                "https://github.com/koalaman/shellcheck/releases/download/${SHELLCHECK_VERSION}/${SHELLCHECK_ARCHIVE}" \
+                "${SHELLCHECK_BASE}/${SHELLCHECK_ARCHIVE}" \
                 -o "/tmp/${SHELLCHECK_ARCHIVE}"
-              echo "${SHELLCHECK_SHA256}  /tmp/${SHELLCHECK_ARCHIVE}" | sha256sum -c -
+              curl -fsSL --retry 3 --retry-delay 5 \
+                "${SHELLCHECK_BASE}/${SHELLCHECK_ARCHIVE}.sha256" \
+                -o "/tmp/${SHELLCHECK_ARCHIVE}.sha256"
+              (cd /tmp && sha256sum -c "${SHELLCHECK_ARCHIVE}.sha256")
               tar -xJf "/tmp/${SHELLCHECK_ARCHIVE}" -C /tmp
-              install -m 0755 "/tmp/shellcheck-${SHELLCHECK_VERSION}/shellcheck" "$TOOLS_DIR/shellcheck"
+              install -m 0755 "/tmp/shellcheck-${SHELLCHECK_VERSION}/shellcheck" "${SHELLCHECK_CACHE}"
             fi
-            install -m 0755 "$TOOLS_DIR/shellcheck" "$BIN_DIR/shellcheck"
+            install -m 0755 "${SHELLCHECK_CACHE}" "$BIN_DIR/shellcheck"
           fi
           shellcheck --version
 
@@ -122,19 +136,23 @@ jobs:
               && /usr/bin/hadolint --version 2>/dev/null | grep -qwF "$HADOLINT_BARE"; then
               install -m 0755 /usr/bin/hadolint "$BIN_DIR/hadolint"
             else
-              if [[ ! -x "$TOOLS_DIR/hadolint" ]]; then
+              # Cache key includes arch so x86_64 and aarch64 runners don't share binaries
+              HADOLINT_CACHE="$TOOLS_DIR/hadolint-${HADOLINT_VERSION}-${HOST_ARCH}"
+              if [[ ! -x "${HADOLINT_CACHE}" ]]; then
                 HADOLINT_BASE="https://github.com/hadolint/hadolint/releases/download/${HADOLINT_VERSION}"
                 curl -fsSL --retry 3 --retry-delay 5 \
-                  "${HADOLINT_BASE}/hadolint-Linux-x86_64" \
-                  -o "$TOOLS_DIR/hadolint-Linux-x86_64"
+                  "${HADOLINT_BASE}/hadolint-Linux-${HADOLINT_ARCH}" \
+                  -o "${HADOLINT_CACHE}"
                 curl -fsSL --retry 3 --retry-delay 5 \
-                  "${HADOLINT_BASE}/hadolint-Linux-x86_64.sha256" \
-                  -o /tmp/hadolint-Linux-x86_64.sha256
-                (cd "$TOOLS_DIR" && sha256sum -c /tmp/hadolint-Linux-x86_64.sha256)
-                mv "$TOOLS_DIR/hadolint-Linux-x86_64" "$TOOLS_DIR/hadolint"
-                chmod +x "$TOOLS_DIR/hadolint"
+                  "${HADOLINT_BASE}/hadolint-Linux-${HADOLINT_ARCH}.sha256" \
+                  -o /tmp/hadolint-Linux-${HADOLINT_ARCH}.sha256
+                (cd "$TOOLS_DIR" \
+                  && sed "s|hadolint-Linux-${HADOLINT_ARCH}|hadolint-${HADOLINT_VERSION}-${HOST_ARCH}|" \
+                    /tmp/hadolint-Linux-${HADOLINT_ARCH}.sha256 \
+                  | sha256sum -c)
+                chmod +x "${HADOLINT_CACHE}"
               fi
-              install -m 0755 "$TOOLS_DIR/hadolint" "$BIN_DIR/hadolint"
+              install -m 0755 "${HADOLINT_CACHE}" "$BIN_DIR/hadolint"
             fi
             hadolint --version
           fi
