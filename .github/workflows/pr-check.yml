@@ -35,9 +35,8 @@ jobs:
     runs-on: ${{ fromJson(inputs.runner || '["self-hosted","linux","generic"]') }}
     timeout-minutes: 10
     env:
-      SHELLCHECK_VERSION: v0.10.0
-      SHELLCHECK_SHA256: 6c881ab0698e4e6ea235245f22832860544f17ba386442fe7e9d629f8cbedf87
-      HADOLINT_VERSION: v2.12.0
+      SHELLCHECK_FALLBACK_VERSION: v0.11.0
+      HADOLINT_FALLBACK_VERSION: v2.12.0
       PYTHON_VERSION: ${{ inputs.python-version || '3.14' }}
       INSTALL_HADOLINT: ${{ inputs.install-hadolint == false && 'false' || 'true' }}
     steps:
@@ -65,9 +64,9 @@ jobs:
       - name: Compute tools cache key
         run: |
           hadolint_part=""
-          [[ "${INSTALL_HADOLINT}" == "true" ]] && hadolint_part="-hadolint-${HADOLINT_VERSION}"
-          echo "TOOLS_CACHE_KEY=tools-shellcheck-${SHELLCHECK_VERSION}${hadolint_part}-${{ runner.os }}" \
-            >> "$GITHUB_ENV"
+          [[ "${INSTALL_HADOLINT}" == "true" ]] && hadolint_part="-hadolint-${HADOLINT_FALLBACK_VERSION}"
+          CACHE_KEY="tools-shellcheck-${SHELLCHECK_FALLBACK_VERSION}${hadolint_part}"
+          echo "TOOLS_CACHE_KEY=${CACHE_KEY}-${{ runner.os }}-$(uname -m)" >> "$GITHUB_ENV"
 
       - name: Cache tool binaries
         id: cache-tools
@@ -80,61 +79,83 @@ jobs:
       - name: Provision lint tools
         run: |
           set -Eeuo pipefail
-          # Install real, version-pinned binaries to ~/.local/bin and prepend it
-          # to PATH. ~/.local/bin therefore shadows any same-named shims in
-          # /usr/local/bin (e.g. self-hosted runners may carry podman-container
-          # wrappers for shellcheck/hadolint that must not be used in CI).
+          # Install lint binaries to ~/.local/bin and prepend it to PATH so they
+          # shadow any same-named shims in /usr/local/bin (e.g. self-hosted runners
+          # may carry podman-container wrappers for shellcheck/hadolint that must not
+          # be used in CI).
           #
-          # Prefer the real system binary in /usr/bin when it already matches the
-          # pinned version — self-hosted Gentoo runners ship the exact pinned
-          # binaries, so copying them locally avoids a redundant network
-          # download. Fall back to a pinned download (cached in ~/.cache/tools)
-          # when the system binary is absent or version-mismatched, e.g. on
-          # github-hosted runners. The download guard is the cached file existing
-          # — self-healing if the cache action reports a hit but restores nothing.
+          # Prefer the system binary in /usr/bin (present on self-hosted Gentoo
+          # runners, version managed by portage) to avoid a redundant network
+          # download. Fall back to a versioned download (SHELLCHECK_FALLBACK_VERSION /
+          # HADOLINT_FALLBACK_VERSION, cached in ~/.cache/tools) when the system
+          # binary is absent, e.g. on github-hosted runners. The download guard is
+          # the cached file existing — self-healing if the cache action reports a hit
+          # but restores nothing.
           TOOLS_DIR="$HOME/.cache/tools"
           BIN_DIR="$HOME/.local/bin"
           mkdir -p "$TOOLS_DIR" "$BIN_DIR"
           echo "$BIN_DIR" >> "$GITHUB_PATH"
           export PATH="$BIN_DIR:$PATH"
 
-          SHELLCHECK_BARE="${SHELLCHECK_VERSION#v}"
-          if [[ -x /usr/bin/shellcheck ]] \
-            && /usr/bin/shellcheck --version 2>/dev/null | grep -qwF "$SHELLCHECK_BARE"; then
+          # Detect host architecture for downloading arch-native binaries
+          HOST_ARCH="$(uname -m)"
+          # Map uname -m to hadolint's arch naming (aarch64 → arm64, else passthrough)
+          case "${HOST_ARCH}" in
+            aarch64) HADOLINT_ARCH="arm64" ;;
+            *)       HADOLINT_ARCH="${HOST_ARCH}" ;;
+          esac
+
+          # Self-hosted Gentoo runners have shellcheck/hadolint managed by portage;
+          # use the system binary as-is without version-matching. SHELLCHECK_FALLBACK_VERSION
+          # and HADOLINT_FALLBACK_VERSION are the pinned fallback versions for runners that
+          # lack a system install (e.g. github-hosted). Deliberate trade-off: version
+          # pinning on self-hosted is delegated to the OS package manager.
+          if [[ -x /usr/bin/shellcheck ]]; then
             install -m 0755 /usr/bin/shellcheck "$BIN_DIR/shellcheck"
           else
-            if [[ ! -x "$TOOLS_DIR/shellcheck" ]]; then
-              SHELLCHECK_ARCHIVE="shellcheck-${SHELLCHECK_VERSION}.linux.x86_64.tar.xz"
+            # Cache key includes arch so x86_64 and aarch64 runners don't share binaries
+            SHELLCHECK_CACHE="$TOOLS_DIR/shellcheck-${SHELLCHECK_FALLBACK_VERSION}-${HOST_ARCH}"
+            if [[ ! -x "${SHELLCHECK_CACHE}" ]]; then
+              SHELLCHECK_ARCHIVE="shellcheck-${SHELLCHECK_FALLBACK_VERSION}.linux.${HOST_ARCH}.tar.xz"
+              SHELLCHECK_BASE="https://github.com/koalaman/shellcheck/releases/download/${SHELLCHECK_FALLBACK_VERSION}"
               curl -fsSL --retry 3 --retry-delay 5 \
-                "https://github.com/koalaman/shellcheck/releases/download/${SHELLCHECK_VERSION}/${SHELLCHECK_ARCHIVE}" \
+                "${SHELLCHECK_BASE}/${SHELLCHECK_ARCHIVE}" \
                 -o "/tmp/${SHELLCHECK_ARCHIVE}"
-              echo "${SHELLCHECK_SHA256}  /tmp/${SHELLCHECK_ARCHIVE}" | sha256sum -c -
+              curl -fsSL --retry 3 --retry-delay 5 \
+                "${SHELLCHECK_BASE}/${SHELLCHECK_ARCHIVE}.sha256" \
+                -o "/tmp/${SHELLCHECK_ARCHIVE}.sha256"
+              # sha256sum -c resolves filenames relative to cwd; the .sha256 file
+              # contains the archive filename, so both must live in /tmp together.
+              (cd /tmp && sha256sum -c "${SHELLCHECK_ARCHIVE}.sha256")
               tar -xJf "/tmp/${SHELLCHECK_ARCHIVE}" -C /tmp
-              install -m 0755 "/tmp/shellcheck-${SHELLCHECK_VERSION}/shellcheck" "$TOOLS_DIR/shellcheck"
+              install -m 0755 "/tmp/shellcheck-${SHELLCHECK_FALLBACK_VERSION}/shellcheck" "${SHELLCHECK_CACHE}"
             fi
-            install -m 0755 "$TOOLS_DIR/shellcheck" "$BIN_DIR/shellcheck"
+            install -m 0755 "${SHELLCHECK_CACHE}" "$BIN_DIR/shellcheck"
           fi
           shellcheck --version
 
           if [[ "${INSTALL_HADOLINT}" == "true" ]]; then
-            HADOLINT_BARE="${HADOLINT_VERSION#v}"
-            if [[ -x /usr/bin/hadolint ]] \
-              && /usr/bin/hadolint --version 2>/dev/null | grep -qwF "$HADOLINT_BARE"; then
+            if [[ -x /usr/bin/hadolint ]]; then
               install -m 0755 /usr/bin/hadolint "$BIN_DIR/hadolint"
             else
-              if [[ ! -x "$TOOLS_DIR/hadolint" ]]; then
-                HADOLINT_BASE="https://github.com/hadolint/hadolint/releases/download/${HADOLINT_VERSION}"
+              # Cache key includes arch so x86_64 and aarch64 runners don't share binaries
+              HADOLINT_CACHE="$TOOLS_DIR/hadolint-${HADOLINT_FALLBACK_VERSION}-${HOST_ARCH}"
+              if [[ ! -x "${HADOLINT_CACHE}" ]]; then
+                HADOLINT_BASE="https://github.com/hadolint/hadolint/releases/download/${HADOLINT_FALLBACK_VERSION}"
+                HADOLINT_TMP="${TOOLS_DIR}/hadolint.tmp"
                 curl -fsSL --retry 3 --retry-delay 5 \
-                  "${HADOLINT_BASE}/hadolint-Linux-x86_64" \
-                  -o "$TOOLS_DIR/hadolint-Linux-x86_64"
+                  "${HADOLINT_BASE}/hadolint-Linux-${HADOLINT_ARCH}" \
+                  -o "${HADOLINT_TMP}"
                 curl -fsSL --retry 3 --retry-delay 5 \
-                  "${HADOLINT_BASE}/hadolint-Linux-x86_64.sha256" \
-                  -o /tmp/hadolint-Linux-x86_64.sha256
-                (cd "$TOOLS_DIR" && sha256sum -c /tmp/hadolint-Linux-x86_64.sha256)
-                mv "$TOOLS_DIR/hadolint-Linux-x86_64" "$TOOLS_DIR/hadolint"
-                chmod +x "$TOOLS_DIR/hadolint"
+                  "${HADOLINT_BASE}/hadolint-Linux-${HADOLINT_ARCH}.sha256" \
+                  -o "/tmp/hadolint-Linux-${HADOLINT_ARCH}.sha256"
+                # Extract the hash and verify the temp file before promoting to cache
+                HADOLINT_HASH="$(awk '{print $1}' "/tmp/hadolint-Linux-${HADOLINT_ARCH}.sha256")"
+                echo "${HADOLINT_HASH}  ${HADOLINT_TMP}" | sha256sum -c
+                install -m 0755 "${HADOLINT_TMP}" "${HADOLINT_CACHE}"
+                rm -f "${HADOLINT_TMP}"
               fi
-              install -m 0755 "$TOOLS_DIR/hadolint" "$BIN_DIR/hadolint"
+              install -m 0755 "${HADOLINT_CACHE}" "$BIN_DIR/hadolint"
             fi
             hadolint --version
           fi
