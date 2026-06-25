@@ -120,6 +120,8 @@ jobs:
               curl -fsSL --retry 3 --retry-delay 5 \
                 "${SHELLCHECK_BASE}/${SHELLCHECK_ARCHIVE}.sha256" \
                 -o "/tmp/${SHELLCHECK_ARCHIVE}.sha256"
+              # sha256sum -c resolves filenames relative to cwd; the .sha256 file
+              # contains the archive filename, so both must live in /tmp together.
               (cd /tmp && sha256sum -c "${SHELLCHECK_ARCHIVE}.sha256")
               tar -xJf "/tmp/${SHELLCHECK_ARCHIVE}" -C /tmp
               install -m 0755 "/tmp/shellcheck-${SHELLCHECK_VERSION}/shellcheck" "${SHELLCHECK_CACHE}"
@@ -136,17 +138,18 @@ jobs:
               HADOLINT_CACHE="$TOOLS_DIR/hadolint-${HADOLINT_VERSION}-${HOST_ARCH}"
               if [[ ! -x "${HADOLINT_CACHE}" ]]; then
                 HADOLINT_BASE="https://github.com/hadolint/hadolint/releases/download/${HADOLINT_VERSION}"
+                HADOLINT_TMP="${TOOLS_DIR}/hadolint.tmp"
                 curl -fsSL --retry 3 --retry-delay 5 \
                   "${HADOLINT_BASE}/hadolint-Linux-${HADOLINT_ARCH}" \
-                  -o "${HADOLINT_CACHE}"
+                  -o "${HADOLINT_TMP}"
                 curl -fsSL --retry 3 --retry-delay 5 \
                   "${HADOLINT_BASE}/hadolint-Linux-${HADOLINT_ARCH}.sha256" \
                   -o "/tmp/hadolint-Linux-${HADOLINT_ARCH}.sha256"
-                (cd "$TOOLS_DIR" \
-                  && sed "s|hadolint-Linux-${HADOLINT_ARCH}|hadolint-${HADOLINT_VERSION}-${HOST_ARCH}|" \
-                    "/tmp/hadolint-Linux-${HADOLINT_ARCH}.sha256" \
-                  | sha256sum -c)
-                chmod +x "${HADOLINT_CACHE}"
+                # Extract the hash and verify the temp file before promoting to cache
+                echo "$(awk '{print $1}' "/tmp/hadolint-Linux-${HADOLINT_ARCH}.sha256")  ${HADOLINT_TMP}" \
+                  | sha256sum -c
+                install -m 0755 "${HADOLINT_TMP}" "${HADOLINT_CACHE}"
+                rm -f "${HADOLINT_TMP}"
               fi
               install -m 0755 "${HADOLINT_CACHE}" "$BIN_DIR/hadolint"
             fi
