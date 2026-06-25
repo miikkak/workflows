@@ -65,8 +65,8 @@ jobs:
         run: |
           hadolint_part=""
           [[ "${INSTALL_HADOLINT}" == "true" ]] && hadolint_part="-hadolint-${HADOLINT_FALLBACK_VERSION}"
-          echo "TOOLS_CACHE_KEY=tools-shellcheck-${SHELLCHECK_FALLBACK_VERSION}${hadolint_part}-${{ runner.os }}-$(uname -m)" \
-            >> "$GITHUB_ENV"
+          CACHE_KEY="tools-shellcheck-${SHELLCHECK_FALLBACK_VERSION}${hadolint_part}"
+          echo "TOOLS_CACHE_KEY=${CACHE_KEY}-${{ runner.os }}-$(uname -m)" >> "$GITHUB_ENV"
 
       - name: Cache tool binaries
         id: cache-tools
