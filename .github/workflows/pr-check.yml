@@ -35,7 +35,7 @@ jobs:
     runs-on: ${{ fromJson(inputs.runner || '["self-hosted","linux","generic"]') }}
     timeout-minutes: 10
     env:
-      SHELLCHECK_VERSION: v0.10.0
+      SHELLCHECK_VERSION: v0.11.0
       HADOLINT_VERSION: v2.12.0
       PYTHON_VERSION: ${{ inputs.python-version || '3.14' }}
       INSTALL_HADOLINT: ${{ inputs.install-hadolint == false && 'false' || 'true' }}
@@ -106,9 +106,7 @@ jobs:
             *)       HADOLINT_ARCH="${HOST_ARCH}" ;;
           esac
 
-          SHELLCHECK_BARE="${SHELLCHECK_VERSION#v}"
-          if [[ -x /usr/bin/shellcheck ]] \
-            && /usr/bin/shellcheck --version 2>/dev/null | grep -qwF "$SHELLCHECK_BARE"; then
+          if [[ -x /usr/bin/shellcheck ]]; then
             install -m 0755 /usr/bin/shellcheck "$BIN_DIR/shellcheck"
           else
             # Cache key includes arch so x86_64 and aarch64 runners don't share binaries
@@ -131,9 +129,7 @@ jobs:
           shellcheck --version
 
           if [[ "${INSTALL_HADOLINT}" == "true" ]]; then
-            HADOLINT_BARE="${HADOLINT_VERSION#v}"
-            if [[ -x /usr/bin/hadolint ]] \
-              && /usr/bin/hadolint --version 2>/dev/null | grep -qwF "$HADOLINT_BARE"; then
+            if [[ -x /usr/bin/hadolint ]]; then
               install -m 0755 /usr/bin/hadolint "$BIN_DIR/hadolint"
             else
               # Cache key includes arch so x86_64 and aarch64 runners don't share binaries
