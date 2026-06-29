@@ -387,7 +387,35 @@ jobs:
 
           changed_files = get_changed_files(from_sha, head_sha)
           file_context = read_file_contexts(changed_files)
-          review_text = review(diff, prior_consider_blocks, prior_must_fix_blocks, file_context)
+          try:
+              review_text = review(diff, prior_consider_blocks, prior_must_fix_blocks, file_context)
+          except anthropic.APIStatusError as e:
+              print(f"Anthropic API error {e.status_code}: {e.message} — posting neutral comment")
+              neutral_body = (
+                  f"## Claude Code Review\n<!-- reviewed-sha: {head_sha} -->\n\n"
+                  f"Code review could not complete: Anthropic API returned status {e.status_code}. "
+                  f"This may indicate an outage or an account billing issue. "
+                  f"Review this PR manually."
+              )
+              try:
+                  post_review(neutral_body, "COMMENT")
+              except Exception as post_err:
+                  print(f"Warning: could not post neutral comment: {post_err}")
+              sys.exit(0)
+          except anthropic.APIConnectionError as e:
+              print(f"Anthropic API connection error: {e} — posting neutral comment")
+              neutral_body = (
+                  f"## Claude Code Review\n<!-- reviewed-sha: {head_sha} -->\n\n"
+                  f"Code review could not complete: could not reach the Anthropic API. "
+                  f"This may indicate a temporary outage. "
+                  f"Review this PR manually."
+              )
+              try:
+                  post_review(neutral_body, "COMMENT")
+              except Exception as post_err:
+                  print(f"Warning: could not post neutral comment: {post_err}")
+              sys.exit(0)
+
           last_line = review_text.strip().splitlines()[-1].strip()
           if last_line not in ("VERDICT: PASS", "VERDICT: ISSUES"):
               print(f"Warning: unexpected verdict line {last_line!r} — defaulting to COMMENT")
