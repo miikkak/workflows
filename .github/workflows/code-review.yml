@@ -240,19 +240,28 @@ jobs:
                   "Use VERDICT: ISSUES only when there are items under MUST FIX. "
                   "Use VERDICT: PASS when there are no MUST FIX items, even if CONSIDER items exist."
               )
-              user_content = f"Review this diff:\n\n```diff\n{diff[:DIFF_MAX_CHARS]}\n```"
+              # Build content blocks with stable context first (cached) and the diff last
+              # (not cached). On re-reviews the diff changes but file context and prior
+              # review history stay the same, so ordering them before the diff lets the
+              # API serve them from cache and only bill full price for the new diff.
+              content_blocks = []
               if file_context:
-                  user_content += (
-                      "\n\n---\n\nFull contents of the modified files are provided below for "
-                      "additional context. Focus your review on the diff above; consult this "
-                      "only when you need to understand surrounding code or existing patterns. "
-                      "Do not review unchanged code — only flag issues introduced by the diff.\n\n"
-                      + file_context
-                  )
+                  content_blocks.append({
+                      "type": "text",
+                      "text": (
+                          "Full contents of the modified files are provided below for "
+                          "additional context. Focus your review on the diff; consult this "
+                          "only when you need to understand surrounding code or existing "
+                          "patterns. Do not review unchanged code — only flag issues "
+                          "introduced by the diff.\n\n" + file_context
+                      ),
+                      "cache_control": {"type": "ephemeral"},
+                  })
+              prior_parts = []
               if prior_must_fix_blocks:
                   combined = '\n\n---\n\n'.join(prior_must_fix_blocks)
-                  user_content += (
-                      "\n\n---\n\nThe following MUST FIX items were raised in previous review "
+                  prior_parts.append(
+                      "The following MUST FIX items were raised in previous review "
                       "rounds on this PR. The new commits are likely addressing these. For each "
                       "item, check the diff carefully and explicitly confirm whether it is now "
                       "resolved or still present. If an item is fully resolved, do not re-raise "
@@ -262,13 +271,23 @@ jobs:
                   )
               if prior_consider_blocks:
                   combined = '\n\n---\n\n'.join(prior_consider_blocks)
-                  user_content += (
-                      "\n\n---\n\nThe following CONSIDER items were already raised in previous "
+                  prior_parts.append(
+                      "The following CONSIDER items were already raised in previous "
                       "review rounds on this PR. Do not re-raise these suggestions — they have "
                       "already been evaluated by the author (accepted or rejected). Only report "
                       "genuinely new issues not covered by the items below:\n\n"
                       + combined
                   )
+              if prior_parts:
+                  content_blocks.append({
+                      "type": "text",
+                      "text": '\n\n---\n\n'.join(prior_parts),
+                      "cache_control": {"type": "ephemeral"},
+                  })
+              content_blocks.append({
+                  "type": "text",
+                  "text": f"Review this diff:\n\n```diff\n{diff[:DIFF_MAX_CHARS]}\n```",
+              })
               message = client.messages.create(
                   model="claude-sonnet-4-6",
                   max_tokens=4096,
@@ -279,7 +298,7 @@ jobs:
                   }],
                   messages=[{
                       "role": "user",
-                      "content": user_content
+                      "content": content_blocks
                   }]
               )
               return message.content[0].text
