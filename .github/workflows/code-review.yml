@@ -401,8 +401,7 @@ jobs:
                   error_detail = "Could not reach the Anthropic API. This may indicate a temporary outage."
               neutral_body = (
                   f"## Claude Code Review\n<!-- reviewed-sha: {head_sha} -->\n\n"
-                  f"Code review could not complete: {error_detail} "
-                  f"Review this PR manually."
+                  f"Code review could not complete: {error_detail} Review this PR manually."
               )
               try:
                   post_review(neutral_body, "COMMENT")
