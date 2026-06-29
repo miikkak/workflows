@@ -389,25 +389,19 @@ jobs:
           file_context = read_file_contexts(changed_files)
           try:
               review_text = review(diff, prior_consider_blocks, prior_must_fix_blocks, file_context)
-          except anthropic.APIStatusError as e:
-              print(f"Anthropic API error {e.status_code}: {e.message} — posting neutral comment")
+          except (anthropic.APIStatusError, anthropic.APIConnectionError) as e:
+              if isinstance(e, anthropic.APIStatusError):
+                  print(f"Anthropic API error {e.status_code}: {e.message} — posting neutral comment")
+                  error_detail = (
+                      f"Anthropic API returned status {e.status_code}. "
+                      f"This may indicate an outage or an account billing issue."
+                  )
+              else:
+                  print(f"Anthropic API connection error: {e} — posting neutral comment")
+                  error_detail = "Could not reach the Anthropic API. This may indicate a temporary outage."
               neutral_body = (
                   f"## Claude Code Review\n<!-- reviewed-sha: {head_sha} -->\n\n"
-                  f"Code review could not complete: Anthropic API returned status {e.status_code}. "
-                  f"This may indicate an outage or an account billing issue. "
-                  f"Review this PR manually."
-              )
-              try:
-                  post_review(neutral_body, "COMMENT")
-              except Exception as post_err:
-                  print(f"Warning: could not post neutral comment: {post_err}")
-              sys.exit(0)
-          except anthropic.APIConnectionError as e:
-              print(f"Anthropic API connection error: {e} — posting neutral comment")
-              neutral_body = (
-                  f"## Claude Code Review\n<!-- reviewed-sha: {head_sha} -->\n\n"
-                  f"Code review could not complete: could not reach the Anthropic API. "
-                  f"This may indicate a temporary outage. "
+                  f"Code review could not complete: {error_detail} "
                   f"Review this PR manually."
               )
               try:
