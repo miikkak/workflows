@@ -215,6 +215,27 @@ jobs:
 
               console.log('✅ Added labels to PR');
 
+              try {
+                await github.graphql(`
+                  mutation EnableAutoMerge($pullRequestId: ID!) {
+                    enablePullRequestAutoMerge(input: {
+                      pullRequestId: $pullRequestId,
+                      mergeMethod: SQUASH
+                    }) {
+                      pullRequest {
+                        autoMergeRequest {
+                          enabledAt
+                        }
+                      }
+                    }
+                  }
+                `, { pullRequestId: pr.node_id });
+
+                console.log('✅ Enabled automerge on PR');
+              } catch (autoMergeError) {
+                console.warn('⚠️ Could not enable automerge:', autoMergeError.message);
+              }
+
             } catch (error) {
               console.error('Error creating PR:', error);
 
