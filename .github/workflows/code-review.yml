@@ -144,7 +144,10 @@ jobs:
                       continue
                   if 'pull_request' in issue:
                       continue
-                  body = (issue.get('body') or '')[:ISSUE_CONTEXT_MAX_CHARS]
+                  raw_body = issue.get('body') or ''
+                  body = raw_body[:ISSUE_CONTEXT_MAX_CHARS]
+                  if len(raw_body) > ISSUE_CONTEXT_MAX_CHARS:
+                      body += '\n... [truncated]'
                   parts.append(f"### Issue #{number}: {issue.get('title', '')}\n{body}")
               return '\n\n'.join(parts)
 
