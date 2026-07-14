@@ -58,7 +58,7 @@ jobs:
 
       - name: Setup Node.js (if needed)
         if: runner.environment == 'github-hosted' && (steps.repo_type.outputs.type == 'nodejs')
-        uses: actions/setup-node@v6
+        uses: actions/setup-node@v7
         with:
           node-version: 'lts/*'
           cache: 'npm'
