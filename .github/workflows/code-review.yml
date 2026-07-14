@@ -115,6 +115,39 @@ jobs:
                   remaining -= len(content)
               return '\n\n'.join(parts)
 
+          ISSUE_CONTEXT_MAX_CHARS = 4_000
+          CLOSING_KEYWORDS = r'close[sd]?|fix(?:e[sd])?|resolve[sd]?'
+
+          def extract_linked_issue_numbers(pr_body, repo):
+              if not pr_body:
+                  return []
+              pattern = re.compile(
+                  rf'\b(?:{CLOSING_KEYWORDS})\s*:?\s+'
+                  rf'(?:#(\d+)|{re.escape(repo)}#(\d+)|https://github\.com/{re.escape(repo)}/issues/(\d+))',
+                  re.IGNORECASE
+              )
+              numbers = set()
+              for match in pattern.finditer(pr_body):
+                  for group in match.groups():
+                      if group:
+                          numbers.add(int(group))
+                          break
+              return sorted(numbers)
+
+          def fetch_linked_issues(numbers):
+              parts = []
+              for number in numbers:
+                  try:
+                      issue = github_get(f"/issues/{number}")
+                  except Exception as e:
+                      print(f"Warning: could not fetch issue #{number}: {e}")
+                      continue
+                  if 'pull_request' in issue:
+                      continue
+                  body = (issue.get('body') or '')[:ISSUE_CONTEXT_MAX_CHARS]
+                  parts.append(f"### Issue #{number}: {issue.get('title', '')}\n{body}")
+              return '\n\n'.join(parts)
+
           def is_ancestor(ancestor_sha, descendant_sha):
               result = subprocess.run(
                   ['git', 'merge-base', '--is-ancestor', ancestor_sha, descendant_sha],
@@ -190,7 +223,7 @@ jobs:
                       must_fix_lines.append(line)
               return '\n'.join(must_fix_lines).strip()
 
-          def review(diff, prior_consider_blocks, prior_must_fix_blocks, file_context=''):
+          def review(diff, prior_consider_blocks, prior_must_fix_blocks, file_context='', issue_context=''):
               client = anthropic.Anthropic(max_retries=3)
               system_prompt = (
                   "You are a code reviewer for a personal infrastructure and tooling repository "
@@ -224,6 +257,13 @@ jobs:
                   "your training data is outdated; treat all explicit version pins as intentional\n"
                   "- Do NOT suggest systemd, journalctl, systemctl or any systemd tooling — "
                   "this system uses OpenRC\n\n"
+                  "If linked GitHub issue context is provided below, use it to understand why "
+                  "the change was made: do not flag something as a problem if it is precisely "
+                  "the intentional behavior described in the issue. Also check whether the diff "
+                  "plausibly resolves the linked issue; if it clearly falls short of what the "
+                  "issue asks for, note this under MUST FIX or CONSIDER as appropriate. If no "
+                  "issue context is provided, do not comment on the lack of a linked issue — it "
+                  "is not required.\n\n"
                   "Response format — use exactly this structure:\n\n"
                   "One-line summary of the change.\n\n"
                   "### MUST FIX\n"
@@ -254,6 +294,16 @@ jobs:
                           "only when you need to understand surrounding code or existing "
                           "patterns. Do not review unchanged code — only flag issues "
                           "introduced by the diff.\n\n" + file_context
+                      ),
+                      "cache_control": {"type": "ephemeral"},
+                  })
+              if issue_context:
+                  content_blocks.append({
+                      "type": "text",
+                      "text": (
+                          "The following GitHub issue(s) are linked to this PR (via closing "
+                          "keywords in the PR description) and explain why this change was "
+                          "made:\n\n" + issue_context
                       ),
                       "cache_control": {"type": "ephemeral"},
                   })
@@ -387,8 +437,19 @@ jobs:
 
           changed_files = get_changed_files(from_sha, head_sha)
           file_context = read_file_contexts(changed_files)
+
           try:
-              review_text = review(diff, prior_consider_blocks, prior_must_fix_blocks, file_context)
+              pr_body = github_get(f"/pulls/{os.environ['PR_NUMBER']}").get('body') or ''
+          except Exception as e:
+              print(f"Warning: could not fetch PR body: {e}")
+              pr_body = ''
+          linked_issue_numbers = extract_linked_issue_numbers(pr_body, os.environ['REPO'])
+          issue_context = fetch_linked_issues(linked_issue_numbers) if linked_issue_numbers else ''
+          if linked_issue_numbers:
+              print(f"Linked issues: {linked_issue_numbers}")
+
+          try:
+              review_text = review(diff, prior_consider_blocks, prior_must_fix_blocks, file_context, issue_context)
           except (anthropic.APIStatusError, anthropic.APIConnectionError) as e:
               if isinstance(e, anthropic.APIStatusError):
                   print(f"Anthropic API error {e.status_code}: {e.message} — posting neutral comment")
