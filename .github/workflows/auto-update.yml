@@ -65,7 +65,7 @@ jobs:
 
       - name: Setup Go (if needed)
         if: runner.environment == 'github-hosted' && (steps.repo_type.outputs.type == 'golang')
-        uses: actions/setup-go@v6
+        uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
           cache: true
