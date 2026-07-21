@@ -3,11 +3,19 @@ name: Release Label
 
 on: # yamllint disable-line rule:truthy
   pull_request:
+    types: [opened, reopened, synchronize, labeled, unlabeled]
     branches: [main]
 
+# Deliberately its own workflow/concurrency group, separate from ci-cd.yml's
+# heavier detect-changes/check-trigger/test chain — labeled/unlabeled here
+# only ever reruns this one cheap check, not the whole PR validation chain.
+# cancel-in-progress is off: this job is a few seconds, so letting a
+# redundant run finish instead of cancelling it avoids ever leaving a
+# CANCELLED check-run on the commit (which would fail the commit-level
+# statusCheckRollup even with a SUCCESS run alongside it).
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 permissions:
   contents: read
