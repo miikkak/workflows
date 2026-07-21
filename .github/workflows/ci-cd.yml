@@ -16,13 +16,16 @@ on: # yamllint disable-line rule:truthy
           a github-hosted runner (e.g. Docker Buildx amd64 builds).
         type: string
         default: '["self-hosted","linux","generic"]'
-      extra-code-paths:
+      code-paths:
         description: >-
-          Extra paths-filter globs appended to the "code" filter's flow-style
-          list, as a raw fragment starting with a comma
-          (e.g. ", 'Dockerfile', 'entrypoint.sh'").
+          Full contents of the paths-filter "code" list, as comma-separated
+          quoted globs (e.g. "'**/*.go', 'go.mod', 'go.sum'"). Repos whose
+          code isn't shell/Python (Go, Dockerfiles, DNS zone files, etc.)
+          pass their own complete list here instead of appending to it.
         type: string
-        default: ""
+        default: >-
+          '**/*.sh', '**/*.bash', '**/*.py', '.github/workflows/**',
+          '.pre-commit-config.yaml', 'package*.json', '.releaserc.json'
       language-setup:
         description: 'Language toolchain to install in the test job: none, go, or uv'
         type: string
@@ -73,11 +76,7 @@ jobs:
         id: filter
         with:
           filters: |
-            code: [
-              '**/*.sh', '**/*.bash', '**/*.py',
-              '.github/workflows/**', '.pre-commit-config.yaml',
-              'package*.json', '.releaserc.json'${{ inputs.extra-code-paths }}
-            ]
+            code: [ ${{ inputs.code-paths }} ]
             docs:
               - '**/*.md'
               - '.gitignore'
