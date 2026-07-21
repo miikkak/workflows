@@ -3,7 +3,6 @@ name: Release Label
 
 on: # yamllint disable-line rule:truthy
   pull_request:
-    types: [opened, reopened, synchronize, labeled, unlabeled]
     branches: [main]
 
 concurrency:
