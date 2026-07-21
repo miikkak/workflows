@@ -151,12 +151,12 @@ jobs:
                   parts.append(f"### Issue #{number}: {issue.get('title', '')}\n{body}")
               return '\n\n'.join(parts)
 
-          def is_ancestor(ancestor_sha, descendant_sha):
+          def get_merge_base(a_sha, b_sha):
               result = subprocess.run(
-                  ['git', 'merge-base', '--is-ancestor', ancestor_sha, descendant_sha],
-                  capture_output=True
+                  ['git', 'merge-base', a_sha, b_sha],
+                  capture_output=True, text=True, check=True
               )
-              return result.returncode == 0
+              return result.stdout.strip()
 
           def github_get(path):
               token = os.environ['GH_TOKEN']
@@ -408,19 +408,20 @@ jobs:
           prior_reviews = get_prior_claude_reviews()
           prior_reviews_sorted = sorted(prior_reviews, key=lambda r: r.get('submitted_at', ''))
 
-          # Compute diff from last reviewed commit, falling back to PR base
-          from_sha = base_sha
           if prior_reviews_sorted:
               last_sha = extract_reviewed_sha(prior_reviews_sorted[-1].get('body', ''))
-              if last_sha and last_sha != head_sha and is_ancestor(last_sha, head_sha):
-                  from_sha = last_sha
-                  print(f"Incremental review from {last_sha[:8]} to {head_sha[:8]}")
-              elif last_sha == head_sha:
+              if last_sha == head_sha:
                   print(f"HEAD {head_sha[:8]} already reviewed, skipping")
                   sys.exit(0)
-              else:
-                  print(f"Prior review SHA not usable as base, falling back to PR base")
 
+          # Diff from the merge-base of base_sha and head_sha, not base_sha or a
+          # prior-reviewed sha directly. When a PR branch is brought up to date via
+          # the GitHub "update branch" API/button, head_sha becomes a merge commit
+          # with base_sha as a direct parent, which makes base_sha its own
+          # merge-base with head_sha — so this correctly excludes content that
+          # arrived via that merge (e.g. commits merged to the base branch after
+          # the PR forked) instead of misattributing it to the PR's own diff.
+          from_sha = get_merge_base(base_sha, head_sha)
           diff = get_diff(from_sha, head_sha)
           if not diff.strip():
               print("Empty diff, skipping review")
