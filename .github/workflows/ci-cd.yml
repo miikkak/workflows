@@ -56,7 +56,11 @@ permissions:
 # Phase 2: Post-Merge Pipeline (cd.yml) → push to main trigger
 # Phase 3: Release & Deploy (release.yml) → tag push trigger
 #
-# Core jobs: detect-changes, check-trigger, test, release-label
+# Core jobs: detect-changes, check-trigger, test. Release-label enforcement is
+# intentionally NOT here — it lives in each consumer's own release-label.yml
+# wrapper (own `on: pull_request` with labeled/unlabeled types, own
+# concurrency group) so that relabeling a PR only ever reruns the cheap label
+# check, not this whole job chain. See check-release-label.yml.
 # ==============================================================================
 
 jobs:
@@ -148,10 +152,3 @@ jobs:
           else
             echo "ℹ️  No test script found (0/0 tests) — OK"
           fi
-
-  release-label:
-    name: Release Label Check
-    uses: miikkak/workflows/.github/workflows/check-release-label.yml@main
-    permissions:
-      contents: read
-      pull-requests: read
