@@ -25,7 +25,7 @@ jobs:
     if: github.event_name == 'workflow_call' || github.event.pull_request.draft == false
     timeout-minutes: 10
     env:
-      ANTHROPIC_VERSION: "0.117.1"
+      ANTHROPIC_VERSION: "0.118.0"
 
     steps:
       - name: Checkout code
