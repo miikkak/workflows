@@ -23,23 +23,12 @@ permissions:
   actions: write
 
 jobs:
-  debug-context:
-    name: Debug context (temporary)
-    runs-on: ubuntu-slim
-    steps:
-      - name: Dump context
-        run: |
-          echo "event_name: ${{ github.event_name }}"
-          echo "inputs.enabled: ${{ inputs.enabled }}"
-          echo "inputs.runner: ${{ inputs.runner }}"
-          echo "inputs.enabled == null: ${{ inputs.enabled == null }}"
-          echo "inputs.runner == null: ${{ inputs.runner == null }}"
   review:
     name: Claude Code Review
     runs-on: ${{ fromJson(inputs.runner || '["self-hosted","linux","generic"]') }}
     if: |
-      (github.event_name == 'workflow_call' && inputs.enabled == true) ||
-      (github.event_name != 'workflow_call' && github.event.pull_request.draft == false)
+      (inputs.runner == null && github.event.pull_request.draft == false) ||
+      (inputs.runner != null && inputs.enabled == true)
     timeout-minutes: 10
     env:
       ANTHROPIC_VERSION: "0.119.0"
