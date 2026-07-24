@@ -23,6 +23,17 @@ permissions:
   actions: write
 
 jobs:
+  debug-context:
+    name: Debug context (temporary)
+    runs-on: ubuntu-slim
+    steps:
+      - name: Dump context
+        run: |
+          echo "event_name: ${{ github.event_name }}"
+          echo "inputs.enabled: ${{ inputs.enabled }}"
+          echo "inputs.runner: ${{ inputs.runner }}"
+          echo "inputs.enabled == null: ${{ inputs.enabled == null }}"
+          echo "inputs.runner == null: ${{ inputs.runner == null }}"
   review:
     name: Claude Code Review
     runs-on: ${{ fromJson(inputs.runner || '["self-hosted","linux","generic"]') }}
