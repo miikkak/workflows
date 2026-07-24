@@ -27,7 +27,7 @@ jobs:
     name: Claude Code Review
     runs-on: ${{ fromJson(inputs.runner || '["self-hosted","linux","generic"]') }}
     if: |
-      inputs.enabled != false &&
+      (inputs.enabled == true || inputs.enabled == null) &&
       (github.event_name == 'workflow_call' || github.event.pull_request.draft == false)
     timeout-minutes: 10
     env:
