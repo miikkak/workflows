@@ -8,6 +8,10 @@ on: # yamllint disable-line rule:truthy
   workflow_dispatch:
   workflow_call:
     inputs:
+      enabled:
+        description: Set to false to skip Claude code review for this repo
+        type: boolean
+        default: true
       runner:
         description: Runner labels as a JSON array string (e.g. '["self-hosted","linux","generic"]')
         type: string
@@ -22,7 +26,9 @@ jobs:
   review:
     name: Claude Code Review
     runs-on: ${{ fromJson(inputs.runner || '["self-hosted","linux","generic"]') }}
-    if: github.event_name == 'workflow_call' || github.event.pull_request.draft == false
+    if: |
+      (inputs.enabled == true || inputs.enabled == null) &&
+      (github.event_name == 'workflow_call' || github.event.pull_request.draft == false)
     timeout-minutes: 10
     env:
       ANTHROPIC_VERSION: "0.119.0"
