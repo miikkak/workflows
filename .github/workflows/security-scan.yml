@@ -244,6 +244,23 @@ jobs:
         if: steps.check_dockerfile.outputs.has_dockerfile == 'true'
         uses: docker/setup-buildx-action@v4
 
+      # Some repos' Dockerfiles COPY in prebuilt binaries pre-staged from
+      # private-repo releases (their downloader stage can't fetch them with
+      # a plain wget - see mc-server-container's Dockerfile for why). Those
+      # repos provide .github/scripts/stage-build-context.sh, the same
+      # script their release.yml and run-tests.sh use, so the scanned image
+      # is built the exact same way. Repos without private prebuilt deps
+      # don't have this script, so the step is a no-op for them.
+      - name: Stage build context
+        if: steps.check_dockerfile.outputs.has_dockerfile == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.PULL_REQUEST_TOKEN }}
+        run: |
+          set -Eeuo pipefail
+          if [[ -f .github/scripts/stage-build-context.sh ]]; then
+            .github/scripts/stage-build-context.sh
+          fi
+
       - name: Build container for scanning
         if: steps.check_dockerfile.outputs.has_dockerfile == 'true'
         uses: docker/build-push-action@v7
