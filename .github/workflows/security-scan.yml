@@ -256,6 +256,7 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.PULL_REQUEST_TOKEN }}
         run: |
+          set -Eeuo pipefail
           if [[ -f .github/scripts/stage-build-context.sh ]]; then
             .github/scripts/stage-build-context.sh
           fi
