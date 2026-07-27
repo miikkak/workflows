@@ -73,7 +73,7 @@ jobs:
 
       - name: Super-Linter
         env:
-          SUPERLINTER_IMAGE: ghcr.io/super-linter/super-linter:v8.6.0
+          SUPERLINTER_IMAGE: ghcr.io/super-linter/super-linter:v8.7.0
         run: |
           set -Eeuo pipefail
           # Run super-linter directly via podman instead of the Docker action.
