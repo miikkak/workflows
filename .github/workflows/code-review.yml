@@ -31,7 +31,7 @@ jobs:
       (inputs.runner != null && inputs.enabled == true)
     timeout-minutes: 10
     env:
-      ANTHROPIC_VERSION: "0.120.0"
+      ANTHROPIC_VERSION: "0.120.2"
 
     steps:
       - name: Checkout code
