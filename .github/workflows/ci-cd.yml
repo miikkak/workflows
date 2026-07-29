@@ -40,9 +40,7 @@ on: # yamllint disable-line rule:truthy
         default: false
 
 permissions:
-  contents: write
-  pull-requests: write
-  issues: write
+  contents: read
 
 # ==============================================================================
 # SHARED WORKFLOW - ci-cd.yml
