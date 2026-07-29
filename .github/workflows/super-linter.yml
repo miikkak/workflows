@@ -54,6 +54,7 @@ jobs:
 
       - name: Configure validators
         run: |
+          set -Eeuo pipefail
           # Only write VALIDATE_*=true — never false.
           # Super-linter v8+ rejects mixing include (true) and exclude (false) modes.
           # Unmentioned validators simply don't run when any VALIDATE_* is set to true.
@@ -68,12 +69,21 @@ jobs:
           # here - add a matching override in the consumer's .editorconfig,
           # not an option to this workflow.
           {
-            [[ '${{ inputs.validate-bash }}' != 'false' ]] && \
+            if [[ '${{ inputs.validate-bash }}' != 'false' ]]; then
               printf 'VALIDATE_BASH=true\nVALIDATE_SHELL_SHFMT=true\nBASH_EXEC_IGNORE_LIBRARIES=true\n'
-            [[ '${{ inputs.validate-yaml }}' != 'false' ]] && echo 'VALIDATE_YAML=true'
-            [[ '${{ inputs.validate-markdown }}' != 'false' ]] && echo 'VALIDATE_MARKDOWN=true'
-            [[ '${{ inputs.validate-github-actions }}' != 'false' ]] && echo 'VALIDATE_GITHUB_ACTIONS=true'
-            [[ '${{ inputs.validate-json }}' == 'true' ]] && echo 'VALIDATE_JSON=true'
+            fi
+            if [[ '${{ inputs.validate-yaml }}' != 'false' ]]; then
+              echo 'VALIDATE_YAML=true'
+            fi
+            if [[ '${{ inputs.validate-markdown }}' != 'false' ]]; then
+              echo 'VALIDATE_MARKDOWN=true'
+            fi
+            if [[ '${{ inputs.validate-github-actions }}' != 'false' ]]; then
+              echo 'VALIDATE_GITHUB_ACTIONS=true'
+            fi
+            if [[ '${{ inputs.validate-json }}' == 'true' ]]; then
+              echo 'VALIDATE_JSON=true'
+            fi
           } >> "$GITHUB_ENV"
 
       - name: Super-Linter
