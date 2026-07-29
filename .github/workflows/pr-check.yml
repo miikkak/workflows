@@ -41,7 +41,7 @@ jobs:
       INSTALL_HADOLINT: ${{ inputs.install-hadolint == false && 'false' || 'true' }}
     steps:
       - name: Checkout code
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           fetch-depth: 0
 
@@ -71,7 +71,7 @@ jobs:
       - name: Cache tool binaries
         id: cache-tools
         if: runner.environment == 'github-hosted'
-        uses: actions/cache@v6
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
           path: ~/.cache/tools
           key: ${{ env.TOOLS_CACHE_KEY }}
@@ -162,13 +162,13 @@ jobs:
 
       - name: Set up Python
         if: runner.environment == 'github-hosted'
-        uses: actions/setup-python@v7
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
         with:
           python-version: "${{ env.PYTHON_VERSION }}"
 
       - name: Cache pre-commit environments
         if: runner.environment == 'github-hosted'
-        uses: actions/cache@v6
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
           path: ~/.cache/pre-commit
           key: pre-commit-${{ runner.os }}-py${{ env.PYTHON_VERSION }}-${{ hashFiles('.pre-commit-config.yaml') }}

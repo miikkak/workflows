@@ -30,7 +30,7 @@ jobs:
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
       - name: Install pyyaml
         run: |
@@ -85,7 +85,7 @@ jobs:
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
       # ── docker-digest handler ──────────────────────────────────────────────
 
@@ -324,7 +324,7 @@ jobs:
 
       - name: Create or update issue
         if: steps.result.outputs.update-available == 'true'
-        uses: actions/github-script@v9
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9
         env:
           CHECK_NAME: ${{ matrix.name }}
           CHECK_TYPE: ${{ matrix.type }}
@@ -416,7 +416,7 @@ jobs:
           steps.result.outputs.update-available == 'true' &&
           matrix.auto-update-workflow != '' &&
           matrix.auto-update-workflow != null
-        uses: actions/github-script@v9
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9
         env:
           AUTO_UPDATE_WORKFLOW: ${{ matrix.auto-update-workflow }}
           AUTO_UPDATE_INPUT: ${{ matrix.auto-update-input }}
