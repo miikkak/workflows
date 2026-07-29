@@ -27,10 +27,6 @@ on: # yamllint disable-line rule:truthy
         description: Enable JSON validator
         type: boolean
         default: false
-      shell-shfmt-opts:
-        description: Options passed to shfmt (only used when validate-bash is true)
-        type: string
-        default: "-i 2 -ci"
       runner:
         description: Runner labels as a JSON array string (e.g. '["self-hosted","linux","x64","generic"]')
         type: string
@@ -61,6 +57,16 @@ jobs:
           # Only write VALIDATE_*=true — never false.
           # Super-linter v8+ rejects mixing include (true) and exclude (false) modes.
           # Unmentioned validators simply don't run when any VALIDATE_* is set to true.
+          #
+          # shfmt formatting is controlled entirely by each repo's own
+          # .editorconfig (super-linter v8.7.0's SHFMT_OPTIONS is a hardcoded
+          # --apply-ignore, not a configurable passthrough - there is no
+          # SHELL_SHFMT_OPTS env var it reads, confirmed by inspecting
+          # /action/lib/globals/linterCommandsOptions.sh in the image).
+          # Files that don't match a .editorconfig glob for indent_style/size
+          # fall back to shfmt's own default (tabs) regardless of what's set
+          # here - add a matching override in the consumer's .editorconfig,
+          # not an option to this workflow.
           {
             [[ '${{ inputs.validate-bash }}' != 'false' ]] && \
               printf 'VALIDATE_BASH=true\nVALIDATE_SHELL_SHFMT=true\nBASH_EXEC_IGNORE_LIBRARIES=true\n'
@@ -68,7 +74,6 @@ jobs:
             [[ '${{ inputs.validate-markdown }}' != 'false' ]] && echo 'VALIDATE_MARKDOWN=true'
             [[ '${{ inputs.validate-github-actions }}' != 'false' ]] && echo 'VALIDATE_GITHUB_ACTIONS=true'
             [[ '${{ inputs.validate-json }}' == 'true' ]] && echo 'VALIDATE_JSON=true'
-            echo "SHELL_SHFMT_OPTS=${{ inputs.shell-shfmt-opts || '-i 2 -ci' }}"
           } >> "$GITHUB_ENV"
 
       - name: Super-Linter
@@ -86,7 +91,7 @@ jobs:
           podman_env=()
           for v in VALIDATE_BASH VALIDATE_SHELL_SHFMT BASH_EXEC_IGNORE_LIBRARIES \
                    VALIDATE_YAML VALIDATE_MARKDOWN VALIDATE_GITHUB_ACTIONS \
-                   VALIDATE_JSON SHELL_SHFMT_OPTS; do
+                   VALIDATE_JSON; do
             [[ -n "${!v:-}" ]] && podman_env+=(-e "${v}=${!v}")
           done
           podman run --rm \
