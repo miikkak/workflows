@@ -38,9 +38,16 @@ on: # yamllint disable-line rule:truthy
         description: Set up Docker Buildx before running tests (container repos)
         type: boolean
         default: false
+    secrets:
+      PULL_REQUEST_TOKEN:
+        description: >-
+          Token used as GH_TOKEN for the docker-buildx test path. Only
+          required when docker-buildx is true; harmless if omitted otherwise.
+        required: false
 
 permissions:
   contents: read
+  pull-requests: read
 
 # ==============================================================================
 # SHARED WORKFLOW - ci-cd.yml
