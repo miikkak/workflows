@@ -54,6 +54,7 @@ jobs:
 
       - name: Configure validators
         run: |
+          set -Eeuo pipefail
           # Only write VALIDATE_*=true — never false.
           # Super-linter v8+ rejects mixing include (true) and exclude (false) modes.
           # Unmentioned validators simply don't run when any VALIDATE_* is set to true.
@@ -67,20 +68,22 @@ jobs:
           # fall back to shfmt's own default (tabs) regardless of what's set
           # here - add a matching override in the consumer's .editorconfig,
           # not an option to this workflow.
-          # Every line ends in `|| true`: under bash -e, a `test && echo` line
-          # that evaluates false is only safe from aborting the script when
-          # something unconditional follows it - true here by accident until
-          # VALIDATE_JSON became the last line (#107 removed the trailing
-          # SHELL_SHFMT_OPTS echo that used to absorb its exit code), which
-          # made Lint fail on every push where JSON validation is off. `|| true`
-          # makes each line's own exit status irrelevant to the group's.
           {
-            [[ '${{ inputs.validate-bash }}' != 'false' ]] && \
-              printf 'VALIDATE_BASH=true\nVALIDATE_SHELL_SHFMT=true\nBASH_EXEC_IGNORE_LIBRARIES=true\n' || true
-            [[ '${{ inputs.validate-yaml }}' != 'false' ]] && echo 'VALIDATE_YAML=true' || true
-            [[ '${{ inputs.validate-markdown }}' != 'false' ]] && echo 'VALIDATE_MARKDOWN=true' || true
-            [[ '${{ inputs.validate-github-actions }}' != 'false' ]] && echo 'VALIDATE_GITHUB_ACTIONS=true' || true
-            [[ '${{ inputs.validate-json }}' == 'true' ]] && echo 'VALIDATE_JSON=true' || true
+            if [[ '${{ inputs.validate-bash }}' != 'false' ]]; then
+              printf 'VALIDATE_BASH=true\nVALIDATE_SHELL_SHFMT=true\nBASH_EXEC_IGNORE_LIBRARIES=true\n'
+            fi
+            if [[ '${{ inputs.validate-yaml }}' != 'false' ]]; then
+              echo 'VALIDATE_YAML=true'
+            fi
+            if [[ '${{ inputs.validate-markdown }}' != 'false' ]]; then
+              echo 'VALIDATE_MARKDOWN=true'
+            fi
+            if [[ '${{ inputs.validate-github-actions }}' != 'false' ]]; then
+              echo 'VALIDATE_GITHUB_ACTIONS=true'
+            fi
+            if [[ '${{ inputs.validate-json }}' == 'true' ]]; then
+              echo 'VALIDATE_JSON=true'
+            fi
           } >> "$GITHUB_ENV"
 
       - name: Super-Linter
