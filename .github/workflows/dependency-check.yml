@@ -12,6 +12,15 @@ on: # yamllint disable-line rule:truthy
         description: Path to the dependency-checks config file in the calling repo
         default: .github/dependency-checks.yml
         type: string
+    secrets:
+      pull-request-token:
+        description: >-
+          PAT with read access to other private repos owned by the same
+          account. Only needed if a `github-release` check in the calling
+          repo's config targets a different private repo - the default
+          token can only read the calling repo itself. Falls back to the
+          default token when not provided.
+        required: false
 
 permissions:
   contents: read
@@ -166,12 +175,7 @@ jobs:
           FILE: ${{ matrix.file }}
           PATTERN: ${{ matrix.pattern }}
           INCLUDE_PRERELEASE: ${{ matrix.include-prerelease }}
-          # PULL_REQUEST_TOKEN (when the caller passes secrets: inherit) is
-          # needed for github-release checks against a private repo the
-          # default GITHUB_TOKEN can't read (e.g. a different private repo
-          # owned by the same account) - falls back to the default token for
-          # checks against public repos.
-          GH_TOKEN: ${{ secrets.PULL_REQUEST_TOKEN || github.token }}
+          GH_TOKEN: ${{ secrets.pull-request-token || github.token }}
         run: |
           # Extract current version from file
           CURRENT=$(grep -Fm1 "${PATTERN}" "$FILE" | cut -d'=' -f2)
