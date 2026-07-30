@@ -166,7 +166,12 @@ jobs:
           FILE: ${{ matrix.file }}
           PATTERN: ${{ matrix.pattern }}
           INCLUDE_PRERELEASE: ${{ matrix.include-prerelease }}
-          GH_TOKEN: ${{ github.token }}
+          # PULL_REQUEST_TOKEN (when the caller passes secrets: inherit) is
+          # needed for github-release checks against a private repo the
+          # default GITHUB_TOKEN can't read (e.g. a different private repo
+          # owned by the same account) - falls back to the default token for
+          # checks against public repos.
+          GH_TOKEN: ${{ secrets.PULL_REQUEST_TOKEN || github.token }}
         run: |
           # Extract current version from file
           CURRENT=$(grep -Fm1 "${PATTERN}" "$FILE" | cut -d'=' -f2)
