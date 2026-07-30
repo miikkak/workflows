@@ -113,8 +113,10 @@ jobs:
     steps:
       - name: Check trigger conditions
         id: check
+        env:
+          EVENT_NAME: ${{ github.event_name }}
         run: |
-          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+          if [[ "$EVENT_NAME" == "workflow_dispatch" ]]; then
             echo "✅ Running full pipeline (manual trigger)"
             echo "should_run=true" >> "$GITHUB_OUTPUT"
             echo "skip_code_checks=false" >> "$GITHUB_OUTPUT"
@@ -235,7 +237,7 @@ jobs:
           # Priority: major > minor > patch (highest wins if multiple labels)
           RELEASE_TYPE=""
           for candidate in major minor patch; do
-            if echo "$LABELS" | grep -q "^release:${candidate}$"; then
+            if echo "$LABELS" | grep -qxF "release:${candidate}"; then
               RELEASE_TYPE="$candidate"
               break
             fi
@@ -245,7 +247,7 @@ jobs:
             echo "✅ Release label resolved to release:${RELEASE_TYPE} - proceeding with semantic-release"
             echo "should_release=true" >> "$GITHUB_OUTPUT"
             echo "release_type=$RELEASE_TYPE" >> "$GITHUB_OUTPUT"
-          elif echo "$LABELS" | grep -q "^release:none$"; then
+          elif echo "$LABELS" | grep -qxF "release:none"; then
             echo "ℹ️  release:none label detected — deployment intentionally skipped"
             echo "should_release=false" >> "$GITHUB_OUTPUT"
           else
