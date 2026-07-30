@@ -46,6 +46,7 @@ jobs:
         env:
           INPUT_TAG: ${{ inputs.tag }}
         run: |
+          set -Eeuo pipefail
           TAG="$INPUT_TAG"
 
           echo "🔍 Validating tag: $TAG"
