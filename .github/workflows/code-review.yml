@@ -74,6 +74,7 @@ jobs:
           PR_HEAD_REF: ${{ github.head_ref }}
         run: |
           python3 << 'PYEOF'
+          import hashlib
           import json
           import os
           import re
@@ -204,6 +205,42 @@ jobs:
               match = re.search(r'<!-- reviewed-sha: ([0-9a-f]{7,40}) -->', body)
               return match.group(1) if match else None
 
+          def extract_diff_hash(body):
+              match = re.search(r'<!-- diff-hash: ([0-9a-f]{64}) -->', body)
+              return match.group(1) if match else None
+
+          def get_review_comments():
+              try:
+                  return github_get_all(f"/pulls/{os.environ['PR_NUMBER']}/comments?per_page=100")
+              except Exception as e:
+                  print(f"Warning: could not fetch review comments: {e}")
+                  return []
+
+          def get_issue_comments():
+              try:
+                  return github_get_all(f"/issues/{os.environ['PR_NUMBER']}/comments?per_page=100")
+              except Exception as e:
+                  print(f"Warning: could not fetch issue comments: {e}")
+                  return []
+
+          def build_human_feedback_context(review_comments, issue_comments):
+              parts = []
+              for c in review_comments:
+                  body = (c.get('body') or '').strip()
+                  if not body:
+                      continue
+                  author = c.get('user', {}).get('login', 'unknown')
+                  path = c.get('path', '')
+                  line = c.get('line') or c.get('original_line') or ''
+                  parts.append(f"[Inline comment by {author} on {path}:{line}]\n{body}")
+              for c in issue_comments:
+                  body = (c.get('body') or '').strip()
+                  if not body or '## Claude Code Review' in body:
+                      continue
+                  author = c.get('user', {}).get('login', 'unknown')
+                  parts.append(f"[PR comment by {author}]\n{body}")
+              return '\n\n---\n\n'.join(parts)
+
           def extract_consider_items(body):
               lines = body.split('\n')
               consider_lines = []
@@ -232,7 +269,10 @@ jobs:
                       must_fix_lines.append(line)
               return '\n'.join(must_fix_lines).strip()
 
-          def review(diff, prior_consider_blocks, prior_must_fix_blocks, file_context='', issue_context=''):
+          def review(
+              diff, prior_consider_blocks, prior_must_fix_blocks,
+              file_context='', issue_context='', human_feedback=''
+          ):
               client = anthropic.Anthropic(max_retries=3)
               system_prompt = (
                   "You are a code reviewer for a personal infrastructure and tooling repository "
@@ -343,6 +383,19 @@ jobs:
                       "text": '\n\n---\n\n'.join(prior_parts),
                       "cache_control": {"type": "ephemeral"},
                   })
+              if human_feedback:
+                  content_blocks.append({
+                      "type": "text",
+                      "text": (
+                          "The following comments were left by humans on this PR, possibly in "
+                          "response to previous review findings. If a finding below was already "
+                          "discussed here and dismissed as a false positive, intentional, or "
+                          "otherwise resolved through discussion, do not re-raise it unless the "
+                          "diff has changed in a way that changes the analysis:\n\n"
+                          + human_feedback
+                      ),
+                      "cache_control": {"type": "ephemeral"},
+                  })
               content_blocks.append({
                   "type": "text",
                   "text": f"Review this diff:\n\n```diff\n{diff[:DIFF_MAX_CHARS]}\n```",
@@ -417,7 +470,8 @@ jobs:
           prior_reviews_sorted = sorted(prior_reviews, key=lambda r: r.get('submitted_at', ''))
 
           if prior_reviews_sorted:
-              last_sha = extract_reviewed_sha(prior_reviews_sorted[-1].get('body', ''))
+              last_body = prior_reviews_sorted[-1].get('body', '')
+              last_sha = extract_reviewed_sha(last_body)
               if last_sha == head_sha:
                   print(f"HEAD {head_sha[:8]} already reviewed, skipping")
                   sys.exit(0)
@@ -435,6 +489,16 @@ jobs:
               print("Empty diff, skipping review")
               sys.exit(0)
 
+          diff_hash = hashlib.sha256(diff.encode()).hexdigest()
+          if prior_reviews_sorted:
+              last_diff_hash = extract_diff_hash(prior_reviews_sorted[-1].get('body', ''))
+              if last_diff_hash == diff_hash:
+                  print(
+                      "Diff content unchanged since last review (rebase, merge, or "
+                      "other logistics-only update) — skipping re-review"
+                  )
+                  sys.exit(0)
+
           # Collect prior MUST FIX items so Claude can verify they were resolved
           prior_must_fix_blocks = [
               m for r in prior_reviews_sorted
@@ -450,6 +514,8 @@ jobs:
           changed_files = get_changed_files(from_sha, head_sha)
           file_context = read_file_contexts(changed_files)
 
+          human_feedback = build_human_feedback_context(get_review_comments(), get_issue_comments())
+
           try:
               pr_body = github_get(f"/pulls/{os.environ['PR_NUMBER']}").get('body') or ''
           except Exception as e:
@@ -461,7 +527,10 @@ jobs:
               print(f"Linked issues: {linked_issue_numbers}")
 
           try:
-              review_text = review(diff, prior_consider_blocks, prior_must_fix_blocks, file_context, issue_context)
+              review_text = review(
+                  diff, prior_consider_blocks, prior_must_fix_blocks,
+                  file_context, issue_context, human_feedback
+              )
           except (anthropic.APIStatusError, anthropic.APIConnectionError) as e:
               if isinstance(e, anthropic.APIStatusError):
                   print(f"Anthropic API error {e.status_code}: {e.message} — posting neutral comment")
@@ -488,7 +557,10 @@ jobs:
           has_must_fix = last_line == "VERDICT: ISSUES"
           event = "REQUEST_CHANGES" if has_must_fix else "APPROVE"
 
-          full_body = f"## Claude Code Review\n<!-- reviewed-sha: {head_sha} -->\n\n{review_text}"
+          full_body = (
+              f"## Claude Code Review\n<!-- reviewed-sha: {head_sha} -->"
+              f"<!-- diff-hash: {diff_hash} -->\n\n{review_text}"
+          )
           try:
               post_review(full_body, event)
           except Exception as e:
