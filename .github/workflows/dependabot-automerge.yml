@@ -1,0 +1,45 @@
+---
+name: Dependabot Automerge
+
+on: # yamllint disable-line rule:truthy
+  workflow_call:
+    inputs:
+      runner:
+        description: Runner labels as a JSON array string (e.g. '["self-hosted","linux","generic"]')
+        type: string
+        default: '["self-hosted","linux","generic"]'
+
+permissions:
+  contents: write
+  pull-requests: write
+
+# ==============================================================================
+# SHARED WORKFLOW - dependabot-automerge.yml
+# ==============================================================================
+# Dependabot (unlike Renovate) has no built-in automerge config in
+# dependabot.yml — GitHub's documented workaround is a workflow that enables
+# GitHub's native auto-merge for patch/minor updates, gated by the repo's
+# required status checks (including Release Label Check). Major bumps are
+# left for manual review.
+# ==============================================================================
+
+jobs:
+  automerge:
+    name: Enable Auto-merge
+    if: github.actor == 'dependabot[bot]'
+    runs-on: ${{ fromJson(inputs.runner || '["self-hosted","linux","generic"]') }}
+    steps:
+      - name: Dependabot metadata
+        id: metadata
+        uses: dependabot/fetch-metadata@21025c705c08248db411dc16f3619e6b5f9ea21a # v2
+        with:
+          github-token: ${{ github.token }}
+
+      - name: Enable auto-merge for patch/minor updates
+        if: |
+          steps.metadata.outputs.update-type == 'version-update:semver-patch' ||
+          steps.metadata.outputs.update-type == 'version-update:semver-minor'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_URL: ${{ github.event.pull_request.html_url }}
+        run: gh pr merge --auto --squash "$PR_URL"
