@@ -21,6 +21,14 @@ permissions:
 # GitHub's native auto-merge for patch/minor updates, gated by the repo's
 # required status checks (including Release Label Check). Major bumps are
 # left for manual review.
+#
+# Dependabot also has no built-in way to add a release: label, unlike
+# Renovate's packageRules addLabels. Without one, auto-merge sits blocked
+# forever on any repo where the Release Label Check is required, since
+# nothing ever satisfies it. So this workflow adds the label itself:
+# development-only bumps get release:none (they don't ship in the deployed
+# artifact), everything else gets release:patch/release:minor to match the
+# Renovate convention.
 # ==============================================================================
 
 jobs:
@@ -36,6 +44,25 @@ jobs:
         uses: dependabot/fetch-metadata@25dd0e34f4fe68f24cc83900b1fe3fe149efef98 # v3
         with:
           github-token: ${{ github.token }}
+
+      - name: Add release label for patch/minor updates
+        if: |
+          steps.metadata.outputs.update-type == 'version-update:semver-patch' ||
+          steps.metadata.outputs.update-type == 'version-update:semver-minor'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_URL: ${{ github.event.pull_request.html_url }}
+          UPDATE_TYPE: ${{ steps.metadata.outputs.update-type }}
+          DEPENDENCY_TYPE: ${{ steps.metadata.outputs.dependency-type }}
+        run: |
+          if [[ "${DEPENDENCY_TYPE}" == *development* ]]; then
+            label="release:none"
+          elif [[ "${UPDATE_TYPE}" == "version-update:semver-patch" ]]; then
+            label="release:patch"
+          else
+            label="release:minor"
+          fi
+          gh pr edit "$PR_URL" --add-label "$label"
 
       - name: Enable auto-merge for patch/minor updates
         if: |
