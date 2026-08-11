@@ -87,6 +87,9 @@ jobs:
             [[ "${PACKAGE_ECOSYSTEM}" == "npm_and_yarn" ]] || return 1
             local manifest_path="${DIRECTORY#/}"
             manifest_path="${manifest_path:+${manifest_path}/}package.json"
+            # Fails open on purpose: if the API call errors (rate limit,
+            # auth), fall through to the default release:patch/minor label
+            # rather than risk mislabeling a real production dep release:none.
             local content
             content=$(gh api "repos/${REPO}/contents/${manifest_path}" --jq '.content' 2>/dev/null) || return 1
             ! printf '%s' "$content" | base64 -d | grep -q '"dependencies"[[:space:]]*:'
