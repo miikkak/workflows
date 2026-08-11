@@ -210,7 +210,7 @@ jobs:
                 owner: context.repo.owner,
                 repo: context.repo.repo,
                 issue_number: pr.number,
-                labels: ['dependencies', 'automated', 'release:patch']
+                labels: ['dependencies', 'automated', 'release:none']
               });
 
               console.log('✅ Added labels to PR');
@@ -276,7 +276,10 @@ jobs:
                   '   git push origin auto-update/update-pre-commit-hooks',
                   '   ```',
                   '',
-                  '4. Create a PR and add the `release:patch` label.',
+                  '4. Create a PR and add the `release:none` label (pre-commit',
+                  '   hook bumps are dev-tooling only and never touch',
+                  '   release-relevant files; if a specific update does need',
+                  '   a release, relabel that PR manually).',
                   '',
                   '---',
                   '*This issue was automatically created by the pre-commit-updates workflow.*',
