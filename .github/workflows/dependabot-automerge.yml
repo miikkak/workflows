@@ -8,6 +8,15 @@ on: # yamllint disable-line rule:truthy
         description: Runner labels as a JSON array string (e.g. '["self-hosted","linux","generic"]')
         type: string
         default: '["self-hosted","linux","generic"]'
+    secrets:
+      PULL_REQUEST_TOKEN:
+        description: >-
+          PAT used to complete the merge. Required: a merge performed with
+          the default GITHUB_TOKEN is attributed to github-actions[bot] and
+          does not trigger the downstream push-to-main release workflow,
+          silently skipping the release. Falls back to GITHUB_TOKEN if
+          omitted, which still enables auto-merge but reintroduces that gap.
+        required: false
 
 permissions:
   contents: write
@@ -29,6 +38,13 @@ permissions:
 # development-only bumps get release:none (they don't ship in the deployed
 # artifact), everything else gets release:patch/release:minor to match the
 # Renovate convention.
+#
+# The merge itself must use a PAT (PULL_REQUEST_TOKEN), not GITHUB_TOKEN:
+# GitHub attributes an auto-merge completed with the default token to
+# github-actions[bot], and pushes from that identity don't trigger
+# downstream push-triggered workflows (the anti-recursion guard) - so a
+# correctly-labeled release:patch/minor PR would auto-merge but never
+# actually trigger the release pipeline.
 # ==============================================================================
 
 jobs:
@@ -69,6 +85,6 @@ jobs:
           steps.metadata.outputs.update-type == 'version-update:semver-patch' ||
           steps.metadata.outputs.update-type == 'version-update:semver-minor'
         env:
-          GH_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ secrets.PULL_REQUEST_TOKEN || github.token }}
           PR_URL: ${{ github.event.pull_request.html_url }}
         run: gh pr merge --auto --squash "$PR_URL"
