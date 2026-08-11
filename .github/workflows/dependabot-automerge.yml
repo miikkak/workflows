@@ -28,7 +28,9 @@ permissions:
 # nothing ever satisfies it. So this workflow adds the label itself:
 # development-only bumps get release:none (they don't ship in the deployed
 # artifact), everything else gets release:patch/release:minor to match the
-# Renovate convention.
+# Renovate convention. Grouped/transitive npm updates (dependency-type
+# "indirect") get the same release:none treatment when the repo's
+# package.json has no production "dependencies" section at all.
 # ==============================================================================
 
 jobs:
@@ -54,8 +56,24 @@ jobs:
           PR_URL: ${{ github.event.pull_request.html_url }}
           UPDATE_TYPE: ${{ steps.metadata.outputs.update-type }}
           DEPENDENCY_TYPE: ${{ steps.metadata.outputs.dependency-type }}
+          PACKAGE_ECOSYSTEM: ${{ steps.metadata.outputs.package-ecosystem }}
+          REPO: ${{ github.repository }}
         run: |
+          # Grouped/transitive npm updates report dependency-type "indirect"
+          # rather than "direct:development", so the substring check below
+          # misses them. In repos where package.json has no top-level
+          # "dependencies" section (semantic-release tooling only, nothing
+          # shipped), any npm bump - direct or indirect - is dev-only.
+          npm_dev_only_repo() {
+            [[ "${PACKAGE_ECOSYSTEM}" == "npm_and_yarn" ]] || return 1
+            local content
+            content=$(gh api "repos/${REPO}/contents/package.json" --jq '.content' 2>/dev/null) || return 1
+            ! echo "$content" | base64 -d | grep -q '"dependencies"[[:space:]]*:'
+          }
+
           if [[ "${DEPENDENCY_TYPE}" == *development* ]]; then
+            label="release:none"
+          elif [[ "${DEPENDENCY_TYPE}" == "indirect" ]] && npm_dev_only_repo; then
             label="release:none"
           elif [[ "${UPDATE_TYPE}" == "version-update:semver-patch" ]]; then
             label="release:patch"
