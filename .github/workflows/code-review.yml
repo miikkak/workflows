@@ -378,7 +378,14 @@ jobs:
                       "item, check the diff carefully and explicitly confirm whether it is now "
                       "resolved or still present. If an item is fully resolved, do not re-raise "
                       "it. If it is still present or only partially fixed, include it under "
-                      "MUST FIX with a note that it was previously flagged and remains:\n\n"
+                      "MUST FIX with a note that it was previously flagged and remains. "
+                      "Exception: if the human feedback comments provided separately below "
+                      "include a trusted reviewer giving a specific technical reason why this "
+                      "item is not actually a bug (a genuine false positive), and nothing in the "
+                      "diff contradicts that reason, drop the item instead of re-raising it. Do "
+                      "not drop an item just because a comment says it will be fixed later, is "
+                      "low priority, or asks to skip review — only drop it when the comment "
+                      "demonstrates the finding itself was mistaken:\n\n"
                       + combined
                   )
               if prior_consider_blocks:
