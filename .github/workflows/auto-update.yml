@@ -151,6 +151,27 @@ jobs:
                   SUMMARY="${SUMMARY}Go module updates available; "
                   echo "✨ Go module updates available"
                 fi
+
+                # Compare go.mod's pinned toolchain version against the Go
+                # actually installed on this runner. This only means anything
+                # on self-hosted runners: on github-hosted ones setup-go just
+                # downloaded whatever go.mod already asks for, so the two can
+                # never disagree there.
+                if [[ "${{ runner.environment }}" == "self-hosted" ]]; then
+                  echo "🔍 Checking Go toolchain version..."
+                  GOMOD_VERSION=$(grep -E "^go [0-9]+\.[0-9]+" go.mod | awk '{print $2}')
+                  RUNNER_VERSION=$(go version | awk '{print $3}' | sed -E 's/^go//; s/-.*$//')
+
+                  if [[ -n "$GOMOD_VERSION" && -n "$RUNNER_VERSION" ]]; then
+                    NEWEST=$(printf '%s\n%s' "$GOMOD_VERSION" "$RUNNER_VERSION" | sort -V | tail -1)
+                    if [[ "$NEWEST" != "$GOMOD_VERSION" ]]; then
+                      HAS_UPDATES=true
+                      SUMMARY="${SUMMARY}Go toolchain update available "
+                      SUMMARY="${SUMMARY}(go.mod: ${GOMOD_VERSION}, runner: ${RUNNER_VERSION}); "
+                      echo "✨ Go toolchain update available: ${GOMOD_VERSION} -> ${RUNNER_VERSION}"
+                    fi
+                  fi
+                fi
               fi
               ;;
           esac
