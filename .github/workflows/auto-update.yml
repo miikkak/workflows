@@ -74,6 +74,7 @@ jobs:
         id: check
         env:
           REPO_TYPE: ${{ steps.repo_type.outputs.type }}
+          RUNNER_ENVIRONMENT: ${{ runner.environment }}
         run: |
           HAS_UPDATES=false
           SUMMARY=""
@@ -157,7 +158,7 @@ jobs:
                 # on self-hosted runners: on github-hosted ones setup-go just
                 # downloaded whatever go.mod already asks for, so the two can
                 # never disagree there.
-                if [[ "${{ runner.environment }}" == "self-hosted" ]]; then
+                if [[ "$RUNNER_ENVIRONMENT" == "self-hosted" ]]; then
                   echo "🔍 Checking Go toolchain version..."
                   GOMOD_VERSION=$(grep -E "^go [0-9]+\.[0-9]+" go.mod | awk '{print $2}')
                   RUNNER_VERSION=$(go version | awk '{print $3}' | sed -E 's/^go//; s/-.*$//')
