@@ -74,6 +74,7 @@ jobs:
         id: check
         env:
           REPO_TYPE: ${{ steps.repo_type.outputs.type }}
+          RUNNER_ENVIRONMENT: ${{ runner.environment }}
         run: |
           HAS_UPDATES=false
           SUMMARY=""
@@ -151,6 +152,27 @@ jobs:
                   SUMMARY="${SUMMARY}Go module updates available; "
                   echo "✨ Go module updates available"
                 fi
+
+                # Compare go.mod's pinned toolchain version against the Go
+                # actually installed on this runner. This only means anything
+                # on self-hosted runners: on github-hosted ones setup-go just
+                # downloaded whatever go.mod already asks for, so the two can
+                # never disagree there.
+                if [[ "$RUNNER_ENVIRONMENT" == "self-hosted" ]]; then
+                  echo "🔍 Checking Go toolchain version..."
+                  GOMOD_VERSION=$(grep -E "^go [0-9]+\.[0-9]+" go.mod | awk '{print $2}')
+                  RUNNER_VERSION=$(go version | awk '{print $3}' | sed -E 's/^go//; s/-.*$//')
+
+                  if [[ -n "$GOMOD_VERSION" && -n "$RUNNER_VERSION" ]]; then
+                    NEWEST=$(printf '%s\n%s' "$GOMOD_VERSION" "$RUNNER_VERSION" | sort -V | tail -1)
+                    if [[ "$NEWEST" != "$GOMOD_VERSION" ]]; then
+                      HAS_UPDATES=true
+                      SUMMARY="${SUMMARY}Go toolchain update available "
+                      SUMMARY="${SUMMARY}(go.mod: ${GOMOD_VERSION}, runner: ${RUNNER_VERSION}); "
+                      echo "✨ Go toolchain update available: ${GOMOD_VERSION} -> ${RUNNER_VERSION}"
+                    fi
+                  fi
+                fi
               fi
               ;;
           esac
@@ -189,12 +211,32 @@ jobs:
         with:
           token: ${{ secrets.PULL_REQUEST_TOKEN }}
 
+      - name: Check for existing update PR
+        id: existing_pr
+        env:
+          GH_TOKEN: ${{ secrets.PULL_REQUEST_TOKEN }}
+        run: |
+          # Avoid spamming a new PR every run (this job can run daily) when
+          # a previously opened update PR is still sitting there unmerged.
+          # Exact title match (not --search, which does a fuzzy substring
+          # match) to avoid false-positiving on an unrelated PR.
+          COUNT=$(gh pr list --state open --json title \
+            --jq '[.[] | select(.title == "🤖 Auto-update: Dependencies update available")] | length')
+          if [[ "$COUNT" -gt 0 ]]; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+            echo "ℹ️  An open auto-update PR already exists, skipping"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Configure Git
+        if: steps.existing_pr.outputs.exists != 'true'
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
 
       - name: Create update branch
+        if: steps.existing_pr.outputs.exists != 'true'
         id: branch
         run: |
           BRANCH_NAME="auto-update/dependencies-$(date +%Y%m%d-%H%M%S)"
@@ -203,6 +245,7 @@ jobs:
           echo "📝 Created branch: $BRANCH_NAME"
 
       - name: Apply updates
+        if: steps.existing_pr.outputs.exists != 'true'
         env:
           UPDATE_SUMMARY: ${{ needs.detect-updates.outputs.update_summary }}
         run: |
@@ -228,6 +271,7 @@ jobs:
           fi
 
       - name: Push changes
+        if: steps.existing_pr.outputs.exists != 'true'
         id: push
         run: |
           git push origin "${{ steps.branch.outputs.branch }}"
@@ -235,7 +279,7 @@ jobs:
           echo "✅ Changes pushed"
 
       - name: Create Pull Request
-        if: steps.push.outputs.pushed == 'true'
+        if: steps.existing_pr.outputs.exists != 'true' && steps.push.outputs.pushed == 'true'
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9
         env:
           UPDATE_SUMMARY: ${{ needs.detect-updates.outputs.update_summary }}
