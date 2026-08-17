@@ -667,8 +667,11 @@ jobs:
       - name: Run OWASP Dependency-Check
         if: steps.check_java.outputs.has_java == 'true'
         id: dependency-check
+        env:
+          NVD_API_KEY: ${{ secrets.NVD_NIST_API_KEY }}
         run: |
-          set +e
+          set -Eeuo pipefail
+          exit_code=0
           "$RUNNER_TEMP/dependency-check-bin/dependency-check/bin/dependency-check.sh" \
             --project "${{ github.event.repository.name }}" \
             --scan . \
@@ -678,13 +681,11 @@ jobs:
             --format TABLE \
             --out dependency-check-report \
             --data "$RUNNER_TEMP/dependency-check-data" \
-            --nvdApiKey "${{ secrets.NVD_NIST_API_KEY }}" \
+            --nvdApiKey "$NVD_API_KEY" \
             --failOnCVSS 9 \
-            --disableAssembly
-          exit_code=$?
-          set -e
+            --disableAssembly || exit_code=$?
           echo "exit_code=${exit_code}" >> "$GITHUB_OUTPUT"
-          # --failOnCVSS makes the tool exit non-zero once a finding at/above the threshold
+          # --failOnCVSS makes the tool exit non-zero (1) once a finding at/above the threshold
           # shows up, so a nonzero code here means "vulnerabilities found", not "tool broke" -
           # same distinction govulncheck's exit code 3 makes above.
           if [[ "${exit_code}" != "0" && "${exit_code}" != "1" ]]; then
