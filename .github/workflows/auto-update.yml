@@ -211,12 +211,31 @@ jobs:
         with:
           token: ${{ secrets.PULL_REQUEST_TOKEN }}
 
+      - name: Check for existing update PR
+        id: existing_pr
+        env:
+          GH_TOKEN: ${{ secrets.PULL_REQUEST_TOKEN }}
+        run: |
+          # Avoid spamming a new PR every run (this job can run daily) when
+          # a previously opened update PR is still sitting there unmerged.
+          COUNT=$(gh pr list --state open \
+            --search 'in:title "Auto-update: Dependencies update available"' \
+            --json number --jq 'length')
+          if [[ "$COUNT" -gt 0 ]]; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+            echo "ℹ️  An open auto-update PR already exists, skipping"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Configure Git
+        if: steps.existing_pr.outputs.exists != 'true'
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
 
       - name: Create update branch
+        if: steps.existing_pr.outputs.exists != 'true'
         id: branch
         run: |
           BRANCH_NAME="auto-update/dependencies-$(date +%Y%m%d-%H%M%S)"
@@ -225,6 +244,7 @@ jobs:
           echo "📝 Created branch: $BRANCH_NAME"
 
       - name: Apply updates
+        if: steps.existing_pr.outputs.exists != 'true'
         env:
           UPDATE_SUMMARY: ${{ needs.detect-updates.outputs.update_summary }}
         run: |
@@ -250,6 +270,7 @@ jobs:
           fi
 
       - name: Push changes
+        if: steps.existing_pr.outputs.exists != 'true'
         id: push
         run: |
           git push origin "${{ steps.branch.outputs.branch }}"
@@ -257,7 +278,7 @@ jobs:
           echo "✅ Changes pushed"
 
       - name: Create Pull Request
-        if: steps.push.outputs.pushed == 'true'
+        if: steps.existing_pr.outputs.exists != 'true' && steps.push.outputs.pushed == 'true'
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9
         env:
           UPDATE_SUMMARY: ${{ needs.detect-updates.outputs.update_summary }}
