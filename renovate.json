@@ -13,6 +13,12 @@
       "matchStrings": ["PYYAML_VERSION: \"(?<currentValue>[^\"]+)\""],
       "depNameTemplate": "PyYAML",
       "datasourceTemplate": "pypi"
+    },
+    {
+      "fileMatch": ["^\\.github/workflows/security-scan\\.yml$"],
+      "matchStrings": ["GOVULNCHECK_VERSION: \"(?<currentValue>[^\"]+)\""],
+      "depNameTemplate": "golang.org/x/vuln",
+      "datasourceTemplate": "go"
     }
   ]
 }
