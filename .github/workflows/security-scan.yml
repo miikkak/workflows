@@ -444,11 +444,23 @@ jobs:
           GOBIN: ${{ github.workspace }}/.govulncheck-bin
         run: go install "golang.org/x/vuln/cmd/govulncheck@${{ env.GOVULNCHECK_VERSION }}"
 
-      - name: Run govulncheck (JSON output)
+      - name: Run govulncheck
         if: steps.check_gomod.outputs.has_gomod == 'true'
+        id: govulncheck
         run: |
+          set +e
           "${{ github.workspace }}/.govulncheck-bin/govulncheck" -json ./... \
-            > govulncheck-results.json || true
+            > govulncheck-results.json
+          exit_code=$?
+          set -e
+          echo "exit_code=${exit_code}" >> "$GITHUB_OUTPUT"
+          # govulncheck exit codes: 0 = clean, 3 = vulnerabilities found,
+          # anything else = the tool itself failed to run - fail loudly here
+          # instead of letting a broken invocation look like a clean scan.
+          if [[ "${exit_code}" != "0" && "${exit_code}" != "3" ]]; then
+            echo "::error::govulncheck failed to run (exit code ${exit_code})"
+            exit "${exit_code}"
+          fi
 
       - name: Check for vulnerabilities and create issue
         if: steps.check_gomod.outputs.has_gomod == 'true' && github.event_name == 'schedule'
@@ -501,6 +513,14 @@ jobs:
             const repoBase = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}`;
             const runUrl = `${repoBase}/actions/runs/${context.runId}`;
 
+            // Keep table rows to one line and immune to embedded `|`/newlines,
+            // since osv.details can be multi-line prose that would otherwise
+            // break the Markdown table.
+            const toCell = (text, maxLen = 150) => {
+              const flat = String(text).replace(/\s+/g, ' ').replace(/\|/g, '\\|').trim();
+              return flat.length > maxLen ? `${flat.slice(0, maxLen - 1)}…` : flat;
+            };
+
             const seen = new Set();
             const rows = [];
             for (const f of findings) {
@@ -508,7 +528,7 @@ jobs:
               seen.add(f.osv);
               const osv = osvById.get(f.osv);
               const summary = osv ? osv.summary || osv.details || '' : '';
-              rows.push(`| \`${f.osv}\` | \`${f.trace?.[0]?.package || 'stdlib'}\` | ${summary} |`);
+              rows.push(`| \`${f.osv}\` | \`${f.trace?.[0]?.package || 'stdlib'}\` | ${toCell(summary)} |`);
             }
 
             const body = [
@@ -557,9 +577,13 @@ jobs:
               console.log(`📝 Created new security issue #${newIssue.data.number}`);
             }
 
-      - name: Run govulncheck (fail on reachable vulnerabilities)
-        if: steps.check_gomod.outputs.has_gomod == 'true'
-        run: "${{ github.workspace }}/.govulncheck-bin/govulncheck ./..."
+      - name: Fail on reachable vulnerabilities
+        if: >-
+          steps.check_gomod.outputs.has_gomod == 'true' &&
+          steps.govulncheck.outputs.exit_code == '3'
+        run: |
+          echo "::error::govulncheck found reachable vulnerabilities - see the govulncheck step above"
+          exit 1
 
       - name: Skip govulncheck (no go.mod)
         if: steps.check_gomod.outputs.has_gomod == 'false'
