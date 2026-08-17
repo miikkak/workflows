@@ -588,3 +588,219 @@ jobs:
       - name: Skip govulncheck (no go.mod)
         if: steps.check_gomod.outputs.has_gomod == 'false'
         run: echo "ℹ️ No go.mod found, skipping govulncheck"
+
+  dependency-check:
+    name: OWASP Dependency-Check
+    runs-on: ${{ fromJson(inputs.runner || '["self-hosted","linux","generic"]') }}
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      issues: write
+
+    env:
+      DEPENDENCY_CHECK_VERSION: "12.1.0"
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          token: ${{ github.token }}
+
+      - name: Check for Java project
+        id: check_java
+        run: |
+          if [[ -f pom.xml || -f build.gradle.kts || -f build.gradle ]]; then
+            echo "has_java=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "has_java=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Set up Java
+        if: steps.check_java.outputs.has_java == 'true'
+        uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961 # v5
+        with:
+          distribution: temurin
+          java-version: "21"
+
+      - name: Cache Dependency-Check CLI
+        if: steps.check_java.outputs.has_java == 'true'
+        id: cache-odc-cli
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+        with:
+          path: ${{ runner.temp }}/dependency-check-bin
+          key: dependency-check-cli-${{ env.DEPENDENCY_CHECK_VERSION }}-${{ runner.os }}-${{ runner.arch }}
+
+      - name: Install Dependency-Check CLI
+        if: >-
+          steps.check_java.outputs.has_java == 'true' &&
+          steps.cache-odc-cli.outputs.cache-hit != 'true'
+        run: |
+          mkdir -p "$RUNNER_TEMP/dependency-check-bin"
+          gh release download "v${DEPENDENCY_CHECK_VERSION}" \
+            --repo jeremylong/DependencyCheck \
+            --pattern "dependency-check-${DEPENDENCY_CHECK_VERSION}-release.zip" \
+            --output "$RUNNER_TEMP/dependency-check.zip"
+          unzip -q "$RUNNER_TEMP/dependency-check.zip" -d "$RUNNER_TEMP/dependency-check-bin"
+          chmod +x "$RUNNER_TEMP/dependency-check-bin/dependency-check/bin/dependency-check.sh"
+        env:
+          GH_TOKEN: ${{ github.token }}
+
+      # NVD's own CVE feed API is aggressively rate-limited without a key, so this cache
+      # persists the downloaded/updated vulnerability database across weekly runs instead of
+      # re-syncing it from scratch every time. Weekly key so it still refreshes regularly;
+      # restore-keys falls back to the most recent cache to keep the update incremental even
+      # when the exact week's cache is missing.
+      - name: Compute cache week
+        if: steps.check_java.outputs.has_java == 'true'
+        id: cache_week
+        run: echo "week=$(date -u +%G-W%V)" >> "$GITHUB_OUTPUT"
+
+      - name: Cache NVD data
+        if: steps.check_java.outputs.has_java == 'true'
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+        with:
+          path: ${{ runner.temp }}/dependency-check-data
+          key: dependency-check-data-${{ github.event.repository.name }}-${{ steps.cache_week.outputs.week }}
+          restore-keys: |
+            dependency-check-data-${{ github.event.repository.name }}-
+
+      - name: Run OWASP Dependency-Check
+        if: steps.check_java.outputs.has_java == 'true'
+        id: dependency-check
+        run: |
+          set +e
+          "$RUNNER_TEMP/dependency-check-bin/dependency-check/bin/dependency-check.sh" \
+            --project "${{ github.event.repository.name }}" \
+            --scan . \
+            --exclude "**/build/**" \
+            --exclude "**/.gradle/**" \
+            --format JSON \
+            --format TABLE \
+            --out dependency-check-report \
+            --data "$RUNNER_TEMP/dependency-check-data" \
+            --nvdApiKey "${{ secrets.NVD_NIST_API_KEY }}" \
+            --failOnCVSS 9 \
+            --disableAssembly
+          exit_code=$?
+          set -e
+          echo "exit_code=${exit_code}" >> "$GITHUB_OUTPUT"
+          # --failOnCVSS makes the tool exit non-zero once a finding at/above the threshold
+          # shows up, so a nonzero code here means "vulnerabilities found", not "tool broke" -
+          # same distinction govulncheck's exit code 3 makes above.
+          if [[ "${exit_code}" != "0" && "${exit_code}" != "1" ]]; then
+            echo "::error::dependency-check failed to run (exit code ${exit_code})"
+            exit "${exit_code}"
+          fi
+
+      - name: Check for vulnerabilities and create issue
+        if: steps.check_java.outputs.has_java == 'true' && github.event_name == 'schedule'
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9
+        with:
+          script: |
+            const fs = require('fs');
+
+            let report;
+            try {
+              const data = fs.readFileSync('dependency-check-report/dependency-check-report.json', 'utf8');
+              report = JSON.parse(data);
+            } catch (error) {
+              console.log('No dependency-check report found or error reading it');
+              return;
+            }
+
+            let criticalCount = 0;
+            let highCount = 0;
+            const rows = [];
+            const seen = new Set();
+
+            for (const dep of report.dependencies || []) {
+              for (const vuln of dep.vulnerabilities || []) {
+                if (seen.has(vuln.name)) continue;
+                seen.add(vuln.name);
+                if (vuln.severity === 'CRITICAL') criticalCount++;
+                if (vuln.severity === 'HIGH') highCount++;
+                if (vuln.severity === 'CRITICAL' || vuln.severity === 'HIGH') {
+                  rows.push(`| \`${vuln.name}\` | ${vuln.severity} | \`${dep.fileName}\` |`);
+                }
+              }
+            }
+
+            if (criticalCount === 0 && highCount === 0) {
+              console.log('✅ No critical or high vulnerabilities found by dependency-check!');
+              return;
+            }
+
+            const issues = await github.rest.issues.listForRepo({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              labels: 'security,automated',
+              state: 'open'
+            });
+
+            const existingIssue = issues.data.find(issue =>
+              issue.title.includes('Security vulnerabilities detected')
+            );
+
+            const repoBase = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}`;
+            const runUrl = `${repoBase}/actions/runs/${context.runId}`;
+            const body = [
+              '## 🔒 Security Vulnerabilities Detected (OWASP Dependency-Check)',
+              '',
+              'Dependency-Check found vulnerabilities in the project\'s Java dependencies:',
+              '',
+              `- **Critical:** ${criticalCount}`,
+              `- **High:** ${highCount}`,
+              '',
+              '| CVE | Severity | Dependency |',
+              '| --- | -------- | ---------- |',
+              ...rows,
+              '',
+              '### Action Required',
+              '',
+              '1. Review the vulnerabilities in the workflow logs (link below)',
+              '2. Update affected dependencies',
+              '3. Test the changes',
+              '4. Create a PR with fixes',
+              '',
+              '### Scan Details',
+              '',
+              `- **Scan Date:** ${new Date().toISOString()}`,
+              '- **Scan Type:** OWASP Dependency-Check',
+              '',
+              'For detailed vulnerability information, check the workflow run:',
+              runUrl,
+              '',
+              '---',
+              '*This issue was automatically created by the security-scan workflow.*',
+            ].join('\n');
+
+            if (existingIssue) {
+              await github.rest.issues.update({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: existingIssue.number,
+                body: body
+              });
+              console.log(`📝 Updated existing security issue #${existingIssue.number}`);
+            } else {
+              const newIssue = await github.rest.issues.create({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                title: '🔒 Security vulnerabilities detected',
+                body: body,
+                labels: ['security', 'automated', 'bug']
+              });
+              console.log(`📝 Created new security issue #${newIssue.data.number}`);
+            }
+
+      - name: Fail on critical vulnerabilities
+        if: >-
+          steps.check_java.outputs.has_java == 'true' &&
+          steps.dependency-check.outputs.exit_code == '1'
+        run: |
+          echo "::error::dependency-check found vulnerabilities at/above CVSS 9 - see the dependency-check step above"
+          exit 1
+
+      - name: Skip dependency-check (no Java project)
+        if: steps.check_java.outputs.has_java == 'false'
+        run: echo "ℹ️ No pom.xml or build.gradle(.kts) found, skipping dependency-check"
