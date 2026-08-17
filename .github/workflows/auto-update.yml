@@ -218,9 +218,10 @@ jobs:
         run: |
           # Avoid spamming a new PR every run (this job can run daily) when
           # a previously opened update PR is still sitting there unmerged.
-          COUNT=$(gh pr list --state open \
-            --search 'in:title "Auto-update: Dependencies update available"' \
-            --json number --jq 'length')
+          # Exact title match (not --search, which does a fuzzy substring
+          # match) to avoid false-positiving on an unrelated PR.
+          COUNT=$(gh pr list --state open --json title \
+            --jq '[.[] | select(.title == "🤖 Auto-update: Dependencies update available")] | length')
           if [[ "$COUNT" -gt 0 ]]; then
             echo "exists=true" >> "$GITHUB_OUTPUT"
             echo "ℹ️  An open auto-update PR already exists, skipping"
