@@ -99,6 +99,8 @@ jobs:
           import urllib.error
           import urllib.request
 
+          import httpx
+
           import anthropic
           import openai
           from google import genai
@@ -518,7 +520,13 @@ jobs:
                   "label": "Gemini (gemini-2.5-pro)",
                   "env_var": "GEMINI_API_KEY",
                   "call": call_gemini,
-                  "exceptions": (genai.errors.APIError,),
+                  # genai.errors.APIError only covers errors the SDK parses from a
+                  # response body (HTTP status errors); a genuine network failure
+                  # (DNS, refused connection, timeout) surfaces as a raw httpx
+                  # transport exception instead — must be caught here too, or an
+                  # outage on this one provider crashes the whole job and loses
+                  # the other providers' results.
+                  "exceptions": (genai.errors.APIError, httpx.TransportError),
               },
           ]
 
@@ -547,6 +555,9 @@ jobs:
                   timeout=120.0,
                   max_retries=0,  # local is either up or not; retrying just burns the job timeout
               )
+              # Fallback model must already be pulled on the runner (`ollama pull
+              # qwen2.5-coder:3b`) — this call doesn't pull it on demand, it just
+              # fails and the caller skips the TL;DR block.
               model = os.environ.get('OLLAMA_MODEL') or 'qwen2.5-coder:3b'
               response = client.chat.completions.create(
                   model=model,
@@ -679,13 +690,24 @@ jobs:
               file_context, issue_context, human_feedback
           )
 
+          def extract_status_code(e):
+              # Anthropic/OpenAI status errors expose .status_code; genai's
+              # ClientError/ServerError expose .code instead. Guard with isinstance
+              # so a connection-error class that happens to carry an unrelated
+              # non-int attribute under either name can't be misread as a status.
+              for attr in ('status_code', 'code'):
+                  value = getattr(e, attr, None)
+                  if isinstance(value, int):
+                      return value
+              return None
+
           sections = []
           verdicts = []
           for provider in providers:
               try:
                   review_text = review(provider, content_blocks, system_prompt)
               except provider['exceptions'] as e:
-                  status_code = getattr(e, 'status_code', None)
+                  status_code = extract_status_code(e)
                   if status_code is not None:
                       print(
                           f"{provider['key']} API error {status_code}: {e} — noting failure in review"
@@ -717,8 +739,13 @@ jobs:
               sections.append(f"#### {provider['label']}\n\n{review_text}")
 
           if not verdicts:
+              # Carries the same diff-hash marker as a full review body (not just
+              # reviewed-sha) so a rerun after every provider failed is treated
+              # consistently by extract_diff_hash's unchanged-diff skip check,
+              # instead of that marker only ever being present on successful runs.
               neutral_body = (
-                  f"## Code Review\n<!-- reviewed-sha: {head_sha} -->\n\n"
+                  f"## Code Review\n<!-- reviewed-sha: {head_sha} -->"
+                  f"<!-- diff-hash: {diff_hash} -->\n\n"
                   + '\n\n---\n\n'.join(sections)
               )
               try:
