@@ -184,8 +184,19 @@ jobs:
               for removed, added in blocks:
                   if not removed or len(removed) != len(added):
                       return False, 'change block is not a 1:1 line replacement'
-                  for old, new in zip(removed, added):
-                      if _mask_versions(old) != _mask_versions(new):
+                  masked_removed = [_mask_versions(l) for l in removed]
+                  masked_added = [_mask_versions(l) for l in added]
+                  # zip() below pairs removed[i] with added[i] by position, which
+                  # assumes that ordering reflects git's actual correspondence. If
+                  # two lines in the same block mask to the same template (e.g. two
+                  # "foo_version: #" lines), that assumption can't be verified — a
+                  # reorder could pair them "correctly" by luck while hiding a real
+                  # change. Bail whenever that precondition holds, since it's the
+                  # only way positional pairing can be wrong.
+                  if len(set(masked_removed)) != len(masked_removed) or len(set(masked_added)) != len(masked_added):
+                      return False, 'block has ambiguous (duplicate-template) line pairing'
+                  for old, new in zip(masked_removed, masked_added):
+                      if old != new:
                           return False, 'a changed line is not purely a version-token diff'
 
               return True, 'every change block is a pure version-token diff'
