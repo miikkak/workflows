@@ -125,6 +125,82 @@ jobs:
               paths = [p for p in result.stdout.splitlines() if p and os.path.isfile(p)]
               return paths
 
+          LOCKFILE_NAMES = {
+              'package-lock.json', 'yarn.lock', 'pnpm-lock.yaml', 'Cargo.lock',
+              'go.sum', 'poetry.lock', 'Gemfile.lock', 'uv.lock',
+          }
+          VERSION_TOKEN_RE = re.compile(r'\d+(?:[.\-]\d+)*')
+
+          def _mask_versions(line):
+              return VERSION_TOKEN_RE.sub('#', line)
+
+          def is_trivial_diff(diff, changed_files):
+              # Deterministic, zero-cost pre-filter for diffs that are obviously not
+              # worth a paid review call: a pure version-string bump (e.g. an Ansible
+              # var or Dockerfile ARG going from 20.1 to 20.2) or a lockfile-only
+              # change. Every check here fails open — any ambiguity falls through to
+              # a full review, never the other way around, since the cost of a wasted
+              # review call is trivial next to the cost of silently skipping a real one.
+              if changed_files and all(os.path.basename(p) in LOCKFILE_NAMES for p in changed_files):
+                  return True, 'lockfile-only change'
+
+              if 'Binary files' in diff:
+                  return False, 'binary file change'
+
+              blocks = []
+              removed, added = [], []
+              in_added_run = False
+
+              def flush():
+                  nonlocal removed, added
+                  if removed or added:
+                      blocks.append((removed, added))
+                  removed, added = [], []
+
+              for line in diff.splitlines():
+                  if (
+                      line.startswith('+++ ') or line.startswith('--- ')
+                      or line.startswith('diff --git') or line.startswith('index ')
+                      or line.startswith('@@')
+                  ):
+                      flush()
+                      in_added_run = False
+                  elif line.startswith('+'):
+                      added.append(line[1:])
+                      in_added_run = True
+                  elif line.startswith('-'):
+                      if in_added_run:
+                          flush()
+                          in_added_run = False
+                      removed.append(line[1:])
+                  else:
+                      flush()
+                      in_added_run = False
+              flush()
+
+              if not blocks:
+                  return False, 'no line-level changes found'
+
+              for removed, added in blocks:
+                  if not removed or len(removed) != len(added):
+                      return False, 'change block is not a 1:1 line replacement'
+                  masked_removed = [_mask_versions(l) for l in removed]
+                  masked_added = [_mask_versions(l) for l in added]
+                  # zip() below pairs removed[i] with added[i] by position, which
+                  # assumes that ordering reflects git's actual correspondence. If
+                  # two lines in the same block mask to the same template (e.g. two
+                  # "foo_version: #" lines), that assumption can't be verified — a
+                  # reorder could pair them "correctly" by luck while hiding a real
+                  # change. Bail whenever that precondition holds, since it's the
+                  # only way positional pairing can be wrong.
+                  if len(set(masked_removed)) != len(masked_removed) or len(set(masked_added)) != len(masked_added):
+                      return False, 'block has ambiguous (duplicate-template) line pairing'
+                  for old, new in zip(masked_removed, masked_added):
+                      if old != new:
+                          return False, 'a changed line is not purely a version-token diff'
+
+              return True, 'every change block is a pure version-token diff'
+
           def read_file_contexts(paths):
               parts = []
               remaining = FILE_CONTEXT_BUDGET
@@ -652,6 +728,13 @@ jobs:
                   )
                   sys.exit(0)
 
+          changed_files = get_changed_files(from_sha, head_sha)
+
+          trivial, trivial_reason = is_trivial_diff(diff, changed_files)
+          if trivial:
+              print(f"Skipping review: trivial diff ({trivial_reason})")
+              sys.exit(0)
+
           # Collect prior MUST FIX items so Claude can verify they were resolved
           prior_must_fix_blocks = [
               m for r in prior_reviews_sorted
@@ -664,7 +747,6 @@ jobs:
               if (c := extract_consider_items(r.get('body', '')))
           ]
 
-          changed_files = get_changed_files(from_sha, head_sha)
           file_context = read_file_contexts(changed_files)
 
           # Only worth fetching once there's a prior review for comments to be responding
