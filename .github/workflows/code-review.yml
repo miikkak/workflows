@@ -84,6 +84,9 @@ jobs:
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           PR_ACTOR: ${{ github.event.pull_request.user.login }}
           PR_HEAD_REF: ${{ github.head_ref }}
+          RUNNER_ENVIRONMENT: ${{ runner.environment }}
+          OLLAMA_HOST: ${{ vars.OLLAMA_HOST }}
+          OLLAMA_MODEL: ${{ vars.OLLAMA_MODEL }}
         run: |
           python3 << 'PYEOF'
           import hashlib
@@ -525,6 +528,35 @@ jobs:
           def review(provider, content_blocks, system_prompt):
               return provider['call'](system_prompt, content_blocks)
 
+          SYNTHESIS_PROMPT = (
+              "You are given several code review write-ups of the same pull request, "
+              "from different reviewers, each already containing a summary, MUST FIX "
+              "items, CONSIDER items, and a verdict. Write a short (3-6 sentence) "
+              "plain-language TL;DR for a human skimming the PR: what the reviewers "
+              "agree on, and any notable disagreement (e.g. a MUST FIX only one "
+              "reviewer raised). Do not invent new findings, do not omit any MUST FIX "
+              "item that appears in the input, and do not state your own verdict — "
+              "this is a summary of what was already written, not a new review."
+          )
+
+          def call_ollama_synthesis(sections):
+              host = os.environ.get('OLLAMA_HOST') or 'http://localhost:11434'
+              client = openai.OpenAI(
+                  base_url=f"{host}/v1",
+                  api_key='ollama',  # unused by Ollama, SDK requires a non-empty value
+                  timeout=120.0,
+                  max_retries=0,  # local is either up or not; retrying just burns the job timeout
+              )
+              model = os.environ.get('OLLAMA_MODEL') or 'qwen2.5-coder:3b'
+              response = client.chat.completions.create(
+                  model=model,
+                  messages=[
+                      {"role": "system", "content": SYNTHESIS_PROMPT},
+                      {"role": "user", "content": '\n\n---\n\n'.join(sections)},
+                  ],
+              )
+              return response.choices[0].message.content, model
+
           def post_review(body, event):
               token = os.environ['GH_TOKEN']
               repo = os.environ['REPO']
@@ -697,6 +729,17 @@ jobs:
 
           has_must_fix = "ISSUES" in verdicts
           event = "REQUEST_CHANGES" if has_must_fix else "APPROVE"
+
+          # Best-effort only: synthesizing a plain-language digest of the reviews
+          # above is a small enough prompt to be a good fit for CPU-only local
+          # Ollama, but it never gates the review — any failure (not self-hosted,
+          # Ollama down, model not pulled, timeout) just skips the TL;DR block.
+          if os.environ.get('RUNNER_ENVIRONMENT') == 'self-hosted' and len(verdicts) >= 2:
+              try:
+                  tldr_text, tldr_model = call_ollama_synthesis(sections)
+                  sections.insert(0, f"### TL;DR (local synthesis via Ollama, {tldr_model})\n\n{tldr_text}")
+              except Exception as e:
+                  print(f"Warning: Ollama synthesis skipped: {e}")
 
           full_body = (
               f"## Code Review\n<!-- reviewed-sha: {head_sha} -->"
