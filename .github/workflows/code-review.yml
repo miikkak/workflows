@@ -9,7 +9,7 @@ on: # yamllint disable-line rule:truthy
   workflow_call:
     inputs:
       enabled:
-        description: Set to false to skip Claude code review for this repo
+        description: Set to false to skip AI code review for this repo
         type: boolean
         default: true
       runner:
@@ -24,7 +24,7 @@ permissions:
 
 jobs:
   review:
-    name: Claude Code Review
+    name: AI Code Review
     runs-on: ${{ fromJson(inputs.runner || '["self-hosted","linux","generic"]') }}
     if: |
       (inputs.runner == null && github.event.pull_request.draft == false) ||
@@ -32,6 +32,8 @@ jobs:
     timeout-minutes: 10
     env:
       ANTHROPIC_VERSION: "0.122.0"
+      OPENAI_VERSION: "3.2.0"
+      GOOGLE_GENAI_VERSION: "2.18.1"
 
     steps:
       - name: Checkout code
@@ -50,21 +52,31 @@ jobs:
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
           path: ~/.cache/pip
-          key: pip-anthropic-${{ env.ANTHROPIC_VERSION }}-${{ runner.os }}
+          key: >-
+            pip-review-${{ env.ANTHROPIC_VERSION }}-${{ env.OPENAI_VERSION }}-${{
+            env.GOOGLE_GENAI_VERSION }}-${{ runner.os }}
 
-      - name: Install anthropic SDK
+      - name: Install review SDKs
         run: |
           # Install into a venv: Gentoo's system python is PEP 668
           # externally-managed (no system pip), so install pip-side packages in
           # an isolated venv. Works identically on github-hosted and self-hosted.
+          # All provider SDKs are installed unconditionally regardless of which
+          # API keys are configured as secrets — keeps this step free of
+          # conditional-install logic that could drift from the provider list
+          # in the review script below.
           python3 -m venv "$RUNNER_TEMP/review-venv"
           "$RUNNER_TEMP/review-venv/bin/pip" install --quiet \
-            anthropic==${{ env.ANTHROPIC_VERSION }}
+            anthropic==${{ env.ANTHROPIC_VERSION }} \
+            openai==${{ env.OPENAI_VERSION }} \
+            google-genai==${{ env.GOOGLE_GENAI_VERSION }}
           echo "$RUNNER_TEMP/review-venv/bin" >> "$GITHUB_PATH"
 
-      - name: Review PR with Claude
+      - name: Review PR with AI
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
           REPO: ${{ github.repository }}
@@ -85,6 +97,9 @@ jobs:
           import urllib.request
 
           import anthropic
+          import openai
+          from google import genai
+          from google.genai import types as genai_types
 
           DIFF_MAX_CHARS = 60_000
           FILE_CONTEXT_BUDGET = 30_000
@@ -193,10 +208,10 @@ jobs:
                       url = match.group(1) if match else None
               return results
 
-          def get_prior_claude_reviews():
+          def get_prior_reviews():
               try:
                   reviews = github_get_all(f"/pulls/{os.environ['PR_NUMBER']}/reviews?per_page=100")
-                  return [r for r in reviews if '## Claude Code Review' in r.get('body', '')]
+                  return [r for r in reviews if '## Code Review' in r.get('body', '')]
               except Exception as e:
                   print(f"Warning: could not fetch prior reviews: {e}")
                   return []
@@ -248,13 +263,16 @@ jobs:
                   if c.get('author_association') not in TRUSTED_AUTHOR_ASSOCIATIONS:
                       continue
                   body = (c.get('body') or '').strip()
-                  if not body or '## Claude Code Review' in body:
+                  if not body or '## Code Review' in body:
                       continue
                   author = c.get('user', {}).get('login', 'unknown')
                   parts.append(f"[PR comment by {author}]\n{body}")
               return '\n\n---\n\n'.join(parts)
 
           def extract_consider_items(body):
+              # A combined multi-provider body has one "### CONSIDER" section per
+              # provider (under separate "#### <model>" headings) — accumulate all
+              # of them rather than stopping after the first.
               lines = body.split('\n')
               consider_lines = []
               in_consider = False
@@ -263,12 +281,14 @@ jobs:
                       in_consider = True
                       continue
                   if in_consider:
-                      if line.startswith('VERDICT:') or line.startswith('### '):
-                          break
+                      if line.startswith('VERDICT:') or line.startswith('### ') or line.startswith('#### '):
+                          in_consider = False
+                          continue
                       consider_lines.append(line)
               return '\n'.join(consider_lines).strip()
 
           def extract_must_fix_items(body):
+              # Same accumulate-across-sections rationale as extract_consider_items.
               lines = body.split('\n')
               must_fix_lines = []
               in_must_fix = False
@@ -277,17 +297,14 @@ jobs:
                       in_must_fix = True
                       continue
                   if in_must_fix:
-                      if line.startswith('VERDICT:') or line.startswith('### '):
-                          break
+                      if line.startswith('VERDICT:') or line.startswith('### ') or line.startswith('#### '):
+                          in_must_fix = False
+                          continue
                       must_fix_lines.append(line)
               return '\n'.join(must_fix_lines).strip()
 
-          def review(
-              diff, prior_consider_blocks, prior_must_fix_blocks,
-              file_context='', issue_context='', human_feedback=''
-          ):
-              client = anthropic.Anthropic(max_retries=3)
-              system_prompt = (
+          def build_system_prompt():
+              return (
                   "You are a code reviewer for a personal infrastructure and tooling repository "
                   "running Gentoo Linux with OpenRC (no systemd). "
                   "Review the git diff for:\n"
@@ -342,6 +359,11 @@ jobs:
                   "Use VERDICT: ISSUES only when there are items under MUST FIX. "
                   "Use VERDICT: PASS when there are no MUST FIX items, even if CONSIDER items exist."
               )
+
+          def build_content_blocks(
+              diff, prior_consider_blocks, prior_must_fix_blocks,
+              file_context='', issue_context='', human_feedback=''
+          ):
               # Build content blocks with stable context first (cached) and the diff last
               # (not cached). On re-reviews the diff changes but file context and prior
               # review history stay the same, so ordering them before the diff lets the
@@ -425,6 +447,10 @@ jobs:
                   "type": "text",
                   "text": f"Review this diff:\n\n```diff\n{diff[:DIFF_MAX_CHARS]}\n```",
               })
+              return content_blocks
+
+          def call_anthropic(system_prompt, content_blocks):
+              client = anthropic.Anthropic(max_retries=3)
               message = client.messages.create(
                   model="claude-sonnet-5",
                   max_tokens=4096,
@@ -441,6 +467,63 @@ jobs:
                   }]
               )
               return message.content[0].text
+
+          def _flatten_content_blocks(content_blocks):
+              # OpenAI/Gemini adapters have no equivalent of Anthropic's explicit
+              # cache_control blocks (OpenAI caches repeated prefixes automatically;
+              # Gemini's implicit caching needs no client-side markers either), so
+              # both just get the same content as one plain concatenated text blob.
+              return '\n\n'.join(b['text'] for b in content_blocks)
+
+          def call_openai(system_prompt, content_blocks):
+              client = openai.OpenAI(max_retries=3)
+              response = client.chat.completions.create(
+                  model="gpt-5",
+                  messages=[
+                      {"role": "system", "content": system_prompt},
+                      {"role": "user", "content": _flatten_content_blocks(content_blocks)},
+                  ],
+              )
+              return response.choices[0].message.content
+
+          def call_gemini(system_prompt, content_blocks):
+              client = genai.Client(api_key=os.environ['GEMINI_API_KEY'])
+              response = client.models.generate_content(
+                  model="gemini-2.5-pro",
+                  contents=_flatten_content_blocks(content_blocks),
+                  config=genai_types.GenerateContentConfig(system_instruction=system_prompt),
+              )
+              return response.text
+
+          PROVIDERS = [
+              {
+                  "key": "anthropic",
+                  "label": "Claude (claude-sonnet-5)",
+                  "env_var": "ANTHROPIC_API_KEY",
+                  "call": call_anthropic,
+                  "exceptions": (anthropic.APIStatusError, anthropic.APIConnectionError),
+              },
+              {
+                  "key": "openai",
+                  "label": "GPT (gpt-5)",
+                  "env_var": "OPENAI_API_KEY",
+                  "call": call_openai,
+                  "exceptions": (openai.APIStatusError, openai.APIConnectionError),
+              },
+              {
+                  "key": "gemini",
+                  "label": "Gemini (gemini-2.5-pro)",
+                  "env_var": "GEMINI_API_KEY",
+                  "call": call_gemini,
+                  "exceptions": (genai.errors.APIError,),
+              },
+          ]
+
+          def configured_providers():
+              return [p for p in PROVIDERS if os.environ.get(p['env_var'])]
+
+          def review(provider, content_blocks, system_prompt):
+              return provider['call'](system_prompt, content_blocks)
 
           def post_review(body, event):
               token = os.environ['GH_TOKEN']
@@ -480,9 +563,11 @@ jobs:
               print(f"Skipping review: dependency update PR by {pr_actor!r} on branch {pr_head_ref!r}")
               sys.exit(0)
 
-          if not os.environ.get('ANTHROPIC_API_KEY'):
-              print("ANTHROPIC_API_KEY not set, skipping review")
+          providers = configured_providers()
+          if not providers:
+              print("No provider API key set (ANTHROPIC_API_KEY/OPENAI_API_KEY/GEMINI_API_KEY), skipping review")
               sys.exit(0)
+          print(f"Configured providers: {[p['key'] for p in providers]}")
 
           if not os.environ.get('BASE_SHA') or not os.environ.get('HEAD_SHA') or not os.environ.get('PR_NUMBER'):
               print("No PR context (workflow_dispatch without PR?), skipping review")
@@ -491,7 +576,7 @@ jobs:
           head_sha = os.environ['HEAD_SHA']
           base_sha = os.environ['BASE_SHA']
 
-          prior_reviews = get_prior_claude_reviews()
+          prior_reviews = get_prior_reviews()
           prior_reviews_sorted = sorted(prior_reviews, key=lambda r: r.get('submitted_at', ''))
 
           if prior_reviews_sorted:
@@ -556,24 +641,53 @@ jobs:
           if linked_issue_numbers:
               print(f"Linked issues: {linked_issue_numbers}")
 
-          try:
-              review_text = review(
-                  diff, prior_consider_blocks, prior_must_fix_blocks,
-                  file_context, issue_context, human_feedback
-              )
-          except (anthropic.APIStatusError, anthropic.APIConnectionError) as e:
-              if isinstance(e, anthropic.APIStatusError):
-                  print(f"Anthropic API error {e.status_code}: {e.message} — posting neutral comment")
-                  error_detail = (
-                      f"Anthropic API returned status {e.status_code}. "
-                      f"This may indicate an outage or an account billing issue."
+          system_prompt = build_system_prompt()
+          content_blocks = build_content_blocks(
+              diff, prior_consider_blocks, prior_must_fix_blocks,
+              file_context, issue_context, human_feedback
+          )
+
+          sections = []
+          verdicts = []
+          for provider in providers:
+              try:
+                  review_text = review(provider, content_blocks, system_prompt)
+              except provider['exceptions'] as e:
+                  status_code = getattr(e, 'status_code', None)
+                  if status_code is not None:
+                      print(
+                          f"{provider['key']} API error {status_code}: {e} — noting failure in review"
+                      )
+                      error_detail = (
+                          f"{provider['label']} API returned status {status_code}. "
+                          f"This may indicate an outage or an account billing issue."
+                      )
+                  else:
+                      print(
+                          f"{provider['key']} API connection error: {e} — noting failure in review"
+                      )
+                      error_detail = (
+                          f"Could not reach the {provider['label']} API. "
+                          f"This may indicate a temporary outage."
+                      )
+                  sections.append(f"#### {provider['label']}\n\nReview could not complete: {error_detail}")
+                  continue
+
+              last_line = review_text.strip().splitlines()[-1].strip()
+              if last_line not in ("VERDICT: PASS", "VERDICT: ISSUES"):
+                  print(
+                      f"Warning: {provider['key']} returned unexpected verdict "
+                      f"line {last_line!r} — treating as ISSUES"
                   )
+                  verdicts.append("ISSUES")
               else:
-                  print(f"Anthropic API connection error: {e} — posting neutral comment")
-                  error_detail = "Could not reach the Anthropic API. This may indicate a temporary outage."
+                  verdicts.append(last_line.removeprefix("VERDICT: "))
+              sections.append(f"#### {provider['label']}\n\n{review_text}")
+
+          if not verdicts:
               neutral_body = (
-                  f"## Claude Code Review\n<!-- reviewed-sha: {head_sha} -->\n\n"
-                  f"Code review could not complete: {error_detail} Review this PR manually."
+                  f"## Code Review\n<!-- reviewed-sha: {head_sha} -->\n\n"
+                  + '\n\n---\n\n'.join(sections)
               )
               try:
                   post_review(neutral_body, "COMMENT")
@@ -581,21 +695,19 @@ jobs:
                   print(f"Warning: could not post neutral comment: {post_err}")
               sys.exit(0)
 
-          last_line = review_text.strip().splitlines()[-1].strip()
-          if last_line not in ("VERDICT: PASS", "VERDICT: ISSUES"):
-              print(f"Warning: unexpected verdict line {last_line!r} — defaulting to COMMENT")
-          has_must_fix = last_line == "VERDICT: ISSUES"
+          has_must_fix = "ISSUES" in verdicts
           event = "REQUEST_CHANGES" if has_must_fix else "APPROVE"
 
           full_body = (
-              f"## Claude Code Review\n<!-- reviewed-sha: {head_sha} -->"
-              f"<!-- diff-hash: {diff_hash} -->\n\n{review_text}"
+              f"## Code Review\n<!-- reviewed-sha: {head_sha} -->"
+              f"<!-- diff-hash: {diff_hash} -->\n\n"
+              + '\n\n---\n\n'.join(sections)
           )
           try:
               post_review(full_body, event)
           except Exception as e:
               print(f"Warning: could not post review to GitHub: {e}")
               print("Review output:")
-              print(review_text)
+              print(full_body)
               sys.exit(1)
           PYEOF
