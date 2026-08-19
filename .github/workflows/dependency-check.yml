@@ -12,6 +12,15 @@ on: # yamllint disable-line rule:truthy
         description: Path to the dependency-checks config file in the calling repo
         default: .github/dependency-checks.yml
         type: string
+      dry-run:
+        description: >-
+          Run every configured check for real, but skip creating/updating
+          tracking issues and dispatching auto-update workflows. Used to
+          smoke-test this workflow's pinned actions and check logic (crane,
+          gh api, Oracle registry auth) from a PR without side effects.
+        required: false
+        type: boolean
+        default: false
     secrets:
       pull-request-token:
         description: >-
@@ -332,7 +341,7 @@ jobs:
       # ── Create or update issue ─────────────────────────────────────────────
 
       - name: Create or update issue
-        if: steps.result.outputs.update-available == 'true'
+        if: steps.result.outputs.update-available == 'true' && inputs.dry-run != true
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9
         env:
           CHECK_NAME: ${{ matrix.name }}
@@ -423,6 +432,7 @@ jobs:
       - name: Dispatch auto-update workflow
         if: >-
           steps.result.outputs.update-available == 'true' &&
+          inputs.dry-run != true &&
           matrix.auto-update-workflow != '' &&
           matrix.auto-update-workflow != null
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9

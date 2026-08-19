@@ -9,9 +9,19 @@ on: # yamllint disable-line rule:truthy
         required: false
         type: string
         default: ""
+      dry-run:
+        description: >-
+          Run the tarball build and artifact upload/download roundtrip for
+          real, but skip creating an actual GitHub Release. Used to
+          smoke-test this workflow's pinned actions (upload-artifact,
+          download-artifact) from a PR, without leaving a fake release in
+          the calling repo's release history.
+        required: false
+        type: boolean
+        default: false
     outputs:
       version:
-        description: "The released version tag (e.g. v1.2.3)"
+        description: "The released version tag (e.g. v1.2.3); meaningless when dry-run is true"
         value: ${{ jobs.release.outputs.version }}
 
 permissions:
@@ -222,6 +232,7 @@ jobs:
           name: ${{ github.event.repository.name }}-tarball
 
       - name: Create Release
+        if: inputs.dry-run != true
         uses: softprops/action-gh-release@3d0d9888cb7fd7b750713d6e236d1fcb99157228 # v3
         with:
           tag_name: ${{ steps.version.outputs.new_version }}

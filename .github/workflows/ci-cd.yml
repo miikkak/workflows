@@ -77,6 +77,8 @@ jobs:
       code: ${{ steps.filter.outputs.code }}
       docs: ${{ steps.filter.outputs.docs }}
       release-config: ${{ steps.filter.outputs.release-config }}
+      workflow-config: ${{ steps.filter.outputs.workflow-config }}
+      has-dependency-check-config: ${{ steps.dep-check-config.outputs.exists }}
     steps:
       - name: Checkout code
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -100,6 +102,26 @@ jobs:
               - '.releaserc.json'
               - 'package.json'
               - 'package-lock.json'
+            # Scoped separately from "code" (which already includes
+            # .github/workflows/** but also fires on nearly every ordinary
+            # code PR) so the toolchain smoke-test jobs below only run on
+            # PRs that actually touch a workflow file — in practice almost
+            # exclusively Renovate's own GitHub Actions digest-bump PRs.
+            workflow-config:
+              - '.github/workflows/**'
+
+      # dependency-check.yml hard-fails if invoked against a repo lacking
+      # its config file; this is the same kind of pre-checkout existence
+      # test that can't be expressed as a job-level `if: hashFiles(...)`
+      # (hashFiles needs an already-checked-out workspace).
+      - name: Check for dependency-checks config
+        id: dep-check-config
+        run: |
+          if [[ -f .github/dependency-checks.yml ]]; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
 
   check-trigger:
     name: Check PR Trigger
@@ -216,3 +238,54 @@ jobs:
           GITHUB_TOKEN: ${{ github.token }}
           RELEASE_TYPE: patch
         run: npx semantic-release --dry-run --no-ci
+
+  # ============================================================================
+  # Post-merge/scheduled-only toolchain smoke tests
+  # ============================================================================
+  # security-scan.yml, dependency-check.yml, and release-tarball.yml each pin
+  # third-party actions (trivy-action, docker/build-push-action, crane,
+  # softprops/action-gh-release, upload/download-artifact, ...) that are only
+  # ever invoked post-merge, on a schedule, or on a tag push. A Renovate
+  # GitHub Actions digest/minor/patch bump to any of them automerges (per
+  # renovate-config's github-actions rule) without ever running the workflow
+  # that actually uses the new pin — the same structural gap that broke
+  # semantic-release's generateNotes above (see miikkak/scripts#881), just at
+  # the shared-workflow-digest layer instead of the per-repo npm-dependency
+  # layer. Invoking each one here, gated on workflow-config (so this never
+  # taxes an ordinary PR), catches a broken bump before the digest ships.
+  #
+  # All three are self-hosted by default (no GitHub Actions minutes billed);
+  # security-scan.yml's own container-scan job is the one exception — it's
+  # hardcoded to ubuntu-latest because the self-hosted runners' `docker` CLI
+  # is a podman shim (exec podman "$@") without real BuildKit/Buildx support,
+  # which docker/build-push-action and docker/setup-buildx-action require.
+  # That job only runs for repos with a Dockerfile, so the small metered cost
+  # is limited to container repos' workflow-touching PRs.
+
+  verify-security-scan:
+    name: Verify Security Scan Toolchain
+    needs: [detect-changes, check-trigger]
+    if: needs.check-trigger.outputs.should_run == 'true' && needs.detect-changes.outputs.workflow-config == 'true'
+    uses: ./.github/workflows/security-scan.yml
+    with:
+      runner: ${{ inputs.runner }}
+
+  verify-dependency-check:
+    name: Verify Dependency-Check Toolchain
+    needs: [detect-changes, check-trigger]
+    if: >-
+      needs.check-trigger.outputs.should_run == 'true' &&
+      needs.detect-changes.outputs.workflow-config == 'true' &&
+      needs.detect-changes.outputs.has-dependency-check-config == 'true'
+    uses: ./.github/workflows/dependency-check.yml
+    with:
+      runner: ${{ inputs.runner }}
+      dry-run: true
+
+  verify-release-tarball:
+    name: Verify Release Tarball Toolchain
+    needs: [detect-changes, check-trigger]
+    if: needs.check-trigger.outputs.should_run == 'true' && needs.detect-changes.outputs.workflow-config == 'true'
+    uses: ./.github/workflows/release-tarball.yml
+    with:
+      dry-run: true
