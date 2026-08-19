@@ -76,6 +76,7 @@ jobs:
     outputs:
       code: ${{ steps.filter.outputs.code }}
       docs: ${{ steps.filter.outputs.docs }}
+      release-config: ${{ steps.filter.outputs.release-config }}
     steps:
       - name: Checkout code
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -95,6 +96,10 @@ jobs:
               - '.markdownlint.json'
               - '.github/ISSUE_TEMPLATE/**'
               - '.github/dependabot.yml'
+            release-config:
+              - '.releaserc.json'
+              - 'package.json'
+              - 'package-lock.json'
 
   check-trigger:
     name: Check PR Trigger
@@ -157,3 +162,37 @@ jobs:
           else
             echo "ℹ️  No test script found (0/0 tests) — OK"
           fi
+
+  verify-release-notes:
+    name: Verify Release Notes Generation
+    runs-on: ${{ fromJson(inputs.runner) }}
+    timeout-minutes: 5
+    needs: [detect-changes, check-trigger]
+    if: needs.check-trigger.outputs.should_run == 'true' && needs.detect-changes.outputs.release-config == 'true'
+    # Catches semantic-release toolchain breakage (e.g. a changelog preset
+    # bump that's incompatible with the pinned conventional-changelog-writer
+    # major) at PR review time instead of at the next labeled post-merge
+    # release. --dry-run skips tagging/publishing but still exercises
+    # generateNotes exactly as cd.yml's real run does.
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 0
+
+      - name: Set up Node.js
+        if: runner.environment == 'github-hosted'
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: "24"
+          cache: "npm"
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Dry-run semantic-release
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          RELEASE_TYPE: patch
+          HEAD_REF: ${{ github.head_ref }}
+        run: npx semantic-release --dry-run --branches "$HEAD_REF"
