@@ -182,10 +182,22 @@ jobs:
     permissions:
       contents: read
     steps:
+      # Default checkout for a pull_request event fetches GitHub's synthetic
+      # refs/pull/N/merge commit (base + PR head merged) in detached HEAD
+      # state — the actual content that would land on main if this PR merged.
       - name: Checkout code
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           fetch-depth: 0
+
+      # Alias detached HEAD to a local branch literally named "main" so
+      # semantic-release's branch check (.releaserc.json lists "main") passes
+      # without changing which commit/content is tested. Combined with
+      # --no-ci below, this makes semantic-release detect the branch from
+      # git state instead of $GITHUB_HEAD_REF (which is always the PR's own
+      # branch name during a pull_request run, never "main").
+      - name: Alias merge-preview commit to main
+        run: git checkout -B main
 
       - name: Set up Node.js
         if: runner.environment == 'github-hosted'
@@ -199,15 +211,8 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      # semantic-release refuses to run generateNotes unless the checked-out
-      # branch matches an entry in --branches — during a PR that's never
-      # literally "main", so HEAD_REF (this PR's own branch) is passed as a
-      # single-entry override purely to satisfy that check. It doesn't
-      # change which commits/tags are considered: those come from the real
-      # checked-out history (fetch-depth: 0), identical to a run on main.
       - name: Dry-run semantic-release
         env:
           GITHUB_TOKEN: ${{ github.token }}
           RELEASE_TYPE: patch
-          HEAD_REF: ${{ github.head_ref }}
-        run: npx semantic-release --dry-run --branches "$HEAD_REF"
+        run: npx semantic-release --dry-run --no-ci
