@@ -172,8 +172,15 @@ jobs:
     # Catches semantic-release toolchain breakage (e.g. a changelog preset
     # bump that's incompatible with the pinned conventional-changelog-writer
     # major) at PR review time instead of at the next labeled post-merge
-    # release. --dry-run skips tagging/publishing but still exercises
-    # generateNotes exactly as cd.yml's real run does.
+    # release. --dry-run skips tagging/publishing but still runs the same
+    # generateNotes render cd.yml's real run performs, against this repo's
+    # actual tags/commit history.
+    #
+    # GITHUB_TOKEN is intentionally left at the workflow's default
+    # `contents: read, pull-requests: read` — --dry-run never pushes, so no
+    # write scope is needed here.
+    permissions:
+      contents: read
     steps:
       - name: Checkout code
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -187,9 +194,17 @@ jobs:
           node-version: "24"
           cache: "npm"
 
+      # npm ci (not install) so a package.json changed without a matching
+      # package-lock.json update fails loudly here instead of silently.
       - name: Install dependencies
         run: npm ci
 
+      # semantic-release refuses to run generateNotes unless the checked-out
+      # branch matches an entry in --branches — during a PR that's never
+      # literally "main", so HEAD_REF (this PR's own branch) is passed as a
+      # single-entry override purely to satisfy that check. It doesn't
+      # change which commits/tags are considered: those come from the real
+      # checked-out history (fetch-depth: 0), identical to a run on main.
       - name: Dry-run semantic-release
         env:
           GITHUB_TOKEN: ${{ github.token }}
