@@ -113,8 +113,12 @@ jobs:
       # dependency-check.yml hard-fails if invoked against a repo lacking
       # its config file; this is the same kind of pre-checkout existence
       # test that can't be expressed as a job-level `if: hashFiles(...)`
-      # (hashFiles needs an already-checked-out workspace).
+      # (hashFiles needs an already-checked-out workspace). Gated on the
+      # filter step's own output (not a separate job) so it's skipped on
+      # the vast majority of PRs where workflow-config is false, matching
+      # the "don't tax ordinary PRs" goal above.
       - name: Check for dependency-checks config
+        if: steps.filter.outputs.workflow-config == 'true'
         id: dep-check-config
         run: |
           if [[ -f .github/dependency-checks.yml ]]; then
@@ -270,6 +274,13 @@ jobs:
     with:
       runner: ${{ inputs.runner }}
 
+  # dry-run only suppresses the issue-creation/dispatch side effects; the
+  # actual check steps (crane digest lookup, gh api, Oracle registry auth)
+  # still make real external calls. That's deliberate — the whole point of
+  # this job is verifying those calls still work against the pinned tool
+  # versions. Only reachable for repos with .github/dependency-checks.yml,
+  # on PRs already touching .github/workflows/**, so call volume stays low
+  # enough that rate limits aren't a practical concern.
   verify-dependency-check:
     name: Verify Dependency-Check Toolchain
     needs: [detect-changes, check-trigger]
@@ -282,6 +293,12 @@ jobs:
       runner: ${{ inputs.runner }}
       dry-run: true
 
+  # tag is deliberately omitted (defaults to ""): release-tarball.yml's
+  # validate-tag-input job guards on `if: inputs.tag != ''` and skips
+  # cleanly when empty (validate-tag.yml's own doc comment: "skipped when
+  # empty"), the same fallback path a real tag-push run takes. Passing a
+  # fabricated tag here would be worse — it'd validate against a tag that
+  # doesn't exist and fail for an unrelated reason.
   verify-release-tarball:
     name: Verify Release Tarball Toolchain
     needs: [detect-changes, check-trigger]
