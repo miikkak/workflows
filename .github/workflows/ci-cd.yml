@@ -216,15 +216,6 @@ jobs:
         with:
           fetch-depth: 0
 
-      # Alias detached HEAD to a local branch literally named "main" so
-      # semantic-release's branch check (.releaserc.json lists "main") passes
-      # without changing which commit/content is tested. Combined with
-      # --no-ci below, this makes semantic-release detect the branch from
-      # git state instead of $GITHUB_HEAD_REF (which is always the PR's own
-      # branch name during a pull_request run, never "main").
-      - name: Alias merge-preview commit to main
-        run: git checkout -B main
-
       - name: Set up Node.js
         if: runner.environment == 'github-hosted'
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
@@ -237,9 +228,27 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      # GITHUB_REF override, not a git-branch alias: semantic-release's
+      # branch check reads env-ci's `prBranch`, not git state at all.
+      # env-ci's GitHub Actions detector computes prBranch from
+      # `parseBranch(env.GITHUB_REF)` — and GITHUB_REF for a pull_request
+      # event is the synthetic `refs/pull/N/merge` ref, never the PR's own
+      # branch name and never "main", regardless of what local branch HEAD
+      # is checked out as. semantic-release's run() then does
+      # `ciBranch = isPr ? prBranch : branch`, so as long as GITHUB_EVENT_NAME
+      # is "pull_request" (isPr stays true), only overriding GITHUB_REF
+      # itself gets ciBranch to resolve to a name matching .releaserc.json's
+      # `branches: ["main"]` — confirmed by reading env-ci's actual source
+      # (node_modules/env-ci/services/github.js) and semantic-release's
+      # index.js after the previous git-checkout-based alias turned out to
+      # be a complete no-op (verified: it always short-circuited at "This
+      # test run was triggered on the branch refs/pull/N/merge", meaning
+      # generateNotes never actually ran against real content, on any PR,
+      # since this job was added in #152).
       - name: Dry-run semantic-release
         env:
           GITHUB_TOKEN: ${{ github.token }}
+          GITHUB_REF: refs/heads/main
           RELEASE_TYPE: patch
         run: npx semantic-release --dry-run --no-ci
 
