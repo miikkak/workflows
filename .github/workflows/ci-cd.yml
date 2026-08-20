@@ -285,7 +285,7 @@ jobs:
     # see #157) but still moves on every merge; once this repo's first tag
     # exists (semantic-release added alongside this fix), a fast-follow PR
     # should repoint all three verify-* jobs at @vN instead.
-    uses: miikkak/workflows/.github/workflows/security-scan.yml@main
+    uses: miikkak/workflows/.github/workflows/security-scan.yml@0de729a83eced92183ba67594ce743daacdbca64 # main
     with:
       runner: ${{ inputs.runner }}
 
@@ -305,7 +305,7 @@ jobs:
       needs.detect-changes.outputs.has-dependency-check-config == 'true'
     # See verify-security-scan above: fully-qualified reference required
     # for cross-repo resolution, not a relative "./..." path.
-    uses: miikkak/workflows/.github/workflows/dependency-check.yml@main
+    uses: miikkak/workflows/.github/workflows/dependency-check.yml@0de729a83eced92183ba67594ce743daacdbca64 # main
     with:
       runner: ${{ inputs.runner }}
       dry-run: true
@@ -322,6 +322,6 @@ jobs:
     if: needs.check-trigger.outputs.should_run == 'true' && needs.detect-changes.outputs.workflow-config == 'true'
     # See verify-security-scan above: fully-qualified reference required
     # for cross-repo resolution, not a relative "./..." path.
-    uses: miikkak/workflows/.github/workflows/release-tarball.yml@main
+    uses: miikkak/workflows/.github/workflows/release-tarball.yml@0de729a83eced92183ba67594ce743daacdbca64 # main
     with:
       dry-run: true
