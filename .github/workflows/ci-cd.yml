@@ -270,7 +270,18 @@ jobs:
     name: Verify Security Scan Toolchain
     needs: [detect-changes, check-trigger]
     if: needs.check-trigger.outputs.should_run == 'true' && needs.detect-changes.outputs.workflow-config == 'true'
-    uses: ./.github/workflows/security-scan.yml
+    # Fully-qualified, not a relative "./..." path: this job graph is
+    # resolved by GitHub before `if:` is evaluated, and a relative reusable
+    # workflow reference only resolves against the repo of the WORKFLOW'S
+    # OWN top-level caller, not the repo that defines it. Since ci-cd.yml
+    # runs cross-repo (every consumer repo's PR calls it via workflow_call),
+    # a relative path here fails startup for every one of them, not just
+    # PRs opened against this repo (miikkak/workflows#153 shipped this
+    # broken; see miikkak/scripts investigation 2026-08-20). `uses:` at job
+    # level takes no expressions, so the ref can't be pinned to this exact
+    # commit — `@main` is the closest static approximation, acceptable
+    # since consumer repos only ever reference already-merged digests.
+    uses: miikkak/workflows/.github/workflows/security-scan.yml@main
     with:
       runner: ${{ inputs.runner }}
 
@@ -288,7 +299,9 @@ jobs:
       needs.check-trigger.outputs.should_run == 'true' &&
       needs.detect-changes.outputs.workflow-config == 'true' &&
       needs.detect-changes.outputs.has-dependency-check-config == 'true'
-    uses: ./.github/workflows/dependency-check.yml
+    # See verify-security-scan above: fully-qualified reference required
+    # for cross-repo resolution, not a relative "./..." path.
+    uses: miikkak/workflows/.github/workflows/dependency-check.yml@main
     with:
       runner: ${{ inputs.runner }}
       dry-run: true
@@ -303,6 +316,8 @@ jobs:
     name: Verify Release Tarball Toolchain
     needs: [detect-changes, check-trigger]
     if: needs.check-trigger.outputs.should_run == 'true' && needs.detect-changes.outputs.workflow-config == 'true'
-    uses: ./.github/workflows/release-tarball.yml
+    # See verify-security-scan above: fully-qualified reference required
+    # for cross-repo resolution, not a relative "./..." path.
+    uses: miikkak/workflows/.github/workflows/release-tarball.yml@main
     with:
       dry-run: true
