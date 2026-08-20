@@ -245,12 +245,18 @@ jobs:
       # test run was triggered on the branch refs/pull/N/merge", meaning
       # generateNotes never actually ran against real content, on any PR,
       # since this job was added in #152).
+      # A step-level `env:` override of GITHUB_REF is silently ineffective
+      # on the actual runner (confirmed: present in the workflow file, works
+      # when reproduced locally, still short-circuits identically in real
+      # CI) — exporting it inline within the script itself, in the same
+      # shell process that invokes node, is what actually sticks.
       - name: Dry-run semantic-release
         env:
           GITHUB_TOKEN: ${{ github.token }}
-          GITHUB_REF: refs/heads/main
           RELEASE_TYPE: patch
-        run: npx semantic-release --dry-run --no-ci
+        run: |
+          export GITHUB_REF=refs/heads/main
+          npx semantic-release --dry-run --no-ci
 
 
   # ============================================================================
