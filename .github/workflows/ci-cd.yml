@@ -243,85 +243,30 @@ jobs:
           RELEASE_TYPE: patch
         run: npx semantic-release --dry-run --no-ci
 
+
   # ============================================================================
-  # Post-merge/scheduled-only toolchain smoke tests
+  # Post-merge/scheduled-only toolchain smoke tests — REMOVED, see #165
   # ============================================================================
-  # security-scan.yml, dependency-check.yml, and release-tarball.yml each pin
-  # third-party actions (trivy-action, docker/build-push-action, crane,
-  # softprops/action-gh-release, upload/download-artifact, ...) that are only
-  # ever invoked post-merge, on a schedule, or on a tag push. A Renovate
-  # GitHub Actions digest/minor/patch bump to any of them automerges (per
-  # renovate-config's github-actions rule) without ever running the workflow
-  # that actually uses the new pin — the same structural gap that broke
-  # semantic-release's generateNotes above (see miikkak/scripts#881), just at
-  # the shared-workflow-digest layer instead of the per-repo npm-dependency
-  # layer. Invoking each one here, gated on workflow-config (so this never
-  # taxes an ordinary PR), catches a broken bump before the digest ships.
+  # #153 added verify-security-scan/verify-dependency-check/verify-release-tarball
+  # here: jobs with `needs: [detect-changes, check-trigger]` PLUS a job-level
+  # `uses:` reusable-workflow reference back into this same repo
+  # (miikkak/workflows/...@main), meant to smoke-test security-scan.yml/
+  # dependency-check.yml/release-tarball.yml from a consumer repo's PR before
+  # a broken shared-workflow digest bump ships. All three consistently hit
+  # startup_failure with 0 jobs created for EVERY consumer repo, at every
+  # digest — including after #156's relative->fully-qualified fix, which only
+  # addressed the wrong-repo-resolution half of the problem.
   #
-  # All three are self-hosted by default (no GitHub Actions minutes billed);
-  # security-scan.yml's own container-scan job is the one exception — it's
-  # hardcoded to ubuntu-latest because the self-hosted runners' `docker` CLI
-  # is a podman shim (exec podman "$@") without real BuildKit/Buildx support,
-  # which docker/build-push-action and docker/setup-buildx-action require.
-  # That job only runs for repos with a Dockerfile, so the small metered cost
-  # is limited to container repos' workflow-touching PRs.
-
-  verify-security-scan:
-    name: Verify Security Scan Toolchain
-    needs: [detect-changes, check-trigger]
-    if: needs.check-trigger.outputs.should_run == 'true' && needs.detect-changes.outputs.workflow-config == 'true'
-    # Fully-qualified, not a relative "./..." path: this job graph is
-    # resolved by GitHub before `if:` is evaluated, and a relative reusable
-    # workflow reference only resolves against the repo of the WORKFLOW'S
-    # OWN top-level caller, not the repo that defines it. Since ci-cd.yml
-    # runs cross-repo (every consumer repo's PR calls it via workflow_call),
-    # a relative path here fails startup for every one of them, not just
-    # PRs opened against this repo (miikkak/workflows#153 shipped this
-    # broken; see miikkak/scripts investigation 2026-08-20). `uses:` at job
-    # level takes no expressions, so the ref can't be pinned to this exact
-    # commit — `@main` is the closest static approximation, acceptable
-    # since consumer repos only ever reference already-merged digests.
-    # main is protected (PR + status checks required, no bypass actors —
-    # see #157) but still moves on every merge; once this repo's first tag
-    # exists (semantic-release added alongside this fix), a fast-follow PR
-    # should repoint all three verify-* jobs at @vN instead.
-    uses: miikkak/workflows/.github/workflows/security-scan.yml@main
-    with:
-      runner: ${{ inputs.runner }}
-
-  # dry-run only suppresses the issue-creation/dispatch side effects; the
-  # actual check steps (crane digest lookup, gh api, Oracle registry auth)
-  # still make real external calls. That's deliberate — the whole point of
-  # this job is verifying those calls still work against the pinned tool
-  # versions. Only reachable for repos with .github/dependency-checks.yml,
-  # on PRs already touching .github/workflows/**, so call volume stays low
-  # enough that rate limits aren't a practical concern.
-  verify-dependency-check:
-    name: Verify Dependency-Check Toolchain
-    needs: [detect-changes, check-trigger]
-    if: >-
-      needs.check-trigger.outputs.should_run == 'true' &&
-      needs.detect-changes.outputs.workflow-config == 'true' &&
-      needs.detect-changes.outputs.has-dependency-check-config == 'true'
-    # See verify-security-scan above: fully-qualified reference required
-    # for cross-repo resolution, not a relative "./..." path.
-    uses: miikkak/workflows/.github/workflows/dependency-check.yml@main
-    with:
-      runner: ${{ inputs.runner }}
-      dry-run: true
-
-  # tag is deliberately omitted (defaults to ""): release-tarball.yml's
-  # validate-tag-input job guards on `if: inputs.tag != ''` and skips
-  # cleanly when empty (validate-tag.yml's own doc comment: "skipped when
-  # empty"), the same fallback path a real tag-push run takes. Passing a
-  # fabricated tag here would be worse — it'd validate against a tag that
-  # doesn't exist and fail for an unrelated reason.
-  verify-release-tarball:
-    name: Verify Release Tarball Toolchain
-    needs: [detect-changes, check-trigger]
-    if: needs.check-trigger.outputs.should_run == 'true' && needs.detect-changes.outputs.workflow-config == 'true'
-    # See verify-security-scan above: fully-qualified reference required
-    # for cross-repo resolution, not a relative "./..." path.
-    uses: miikkak/workflows/.github/workflows/release-tarball.yml@main
-    with:
-      dry-run: true
+  # Isolated by testing against a real consumer repo (version-logger):
+  # stripping all three jobs (this commit) is what actually fixes it — not
+  # narrowing to just the release-tarball.yml one (which itself has a further
+  # relative nested call to validate-tag.yml, the theory tried first). The
+  # `needs:` + self-referential-`uses:` combination appears to be the real
+  # trigger, not just the double-nesting release-tarball.yml has; self-cd.yml
+  # -> cd.yml and every consumer's release.yml -> release-tarball.yml both
+  # work, but neither of those reusable-workflow jobs has a `needs:` on a
+  # sibling regular job the way these three did.
+  #
+  # See #165 for reinstating this coverage without a nested reusable-workflow
+  # `uses:` — e.g. inlined smoke-test steps (the shape self-release.yml had to
+  # move to for release-tarball.yml, for the same underlying reason).
