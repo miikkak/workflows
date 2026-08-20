@@ -29,6 +29,18 @@ permissions:
 
 jobs:
   release-build:
-    uses: ./.github/workflows/release-tarball.yml
+    # Fully-qualified, not relative: release-tarball.yml itself relatively
+    # calls validate-tag.yml (uses: ./...), and chaining two relative
+    # reusable-workflow references back to back — even within the same
+    # repo, even from a branch ref — hits a startup_failure with 0 jobs
+    # created (confirmed by testing both the v1.0.0 tag-push trigger and a
+    # workflow_dispatch from main; both failed identically). One level of
+    # self-relative reference works fine (see self-cd.yml -> cd.yml, which
+    # doesn't itself nest a further relative call); two chained does not.
+    # Every consumer repo's release.yml already calls release-tarball.yml
+    # fully-qualified for unrelated reasons (cross-repo) and its internal
+    # relative call to validate-tag.yml works fine from that position —
+    # matching that proven-working shape here instead of inventing a new one.
+    uses: miikkak/workflows/.github/workflows/release-tarball.yml@main
     with:
       tag: ${{ inputs.tag || '' }}
