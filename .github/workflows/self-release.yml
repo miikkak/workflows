@@ -1,10 +1,25 @@
 ---
 name: Release (self)
 
-# Equivalent of every consumer repo's own release.yml. release-deploy.yml
-# (webhook delivery to DEPLOY_SERVERS) is deliberately not called here —
-# this repo has nothing to deploy, it ships tarballs of the workflow files
-# themselves for reference/pinning purposes.
+# Equivalent of every consumer repo's own release.yml, but NOT built on top
+# of release-tarball.yml via a reusable-workflow call, unlike every consumer
+# repo. release-tarball.yml itself relatively calls validate-tag.yml — and
+# chaining two reusable-workflow hops that both resolve back into this same
+# repo (self-release.yml -> release-tarball.yml -> validate-tag.yml) hits a
+# startup_failure with 0 jobs created, reproduced with every combination of
+# relative/fully-qualified refs on either hop. A single self-referencing hop
+# works fine (self-cd.yml -> cd.yml has no further nested `uses:`); this repo
+# calling two hops deep into its own workflows does not — apparently a
+# platform limitation, not a config mistake (release-tarball.yml's identical
+# two-hop chain works for every consumer repo, since there the top-level
+# caller's repo differs from the repo the hops resolve into).
+#
+# So this inlines the same tag-validation + generic-tarball + GitHub Release
+# steps release-tarball.yml/validate-tag.yml already implement, as plain
+# steps with zero further `uses:` nesting. release-tarball.yml itself still
+# gets exercised continuously by every consumer repo's real releases — this
+# duplication is scoped to this one repo's own (low-stakes, reference-only)
+# release artifact.
 
 on: # yamllint disable-line rule:truthy
   push:
@@ -28,19 +43,91 @@ permissions:
   contents: write
 
 jobs:
-  release-build:
-    # Fully-qualified, not relative: release-tarball.yml itself relatively
-    # calls validate-tag.yml (uses: ./...), and chaining two relative
-    # reusable-workflow references back to back — even within the same
-    # repo, even from a branch ref — hits a startup_failure with 0 jobs
-    # created (confirmed by testing both the v1.0.0 tag-push trigger and a
-    # workflow_dispatch from main; both failed identically). One level of
-    # self-relative reference works fine (see self-cd.yml -> cd.yml, which
-    # doesn't itself nest a further relative call); two chained does not.
-    # Every consumer repo's release.yml already calls release-tarball.yml
-    # fully-qualified for unrelated reasons (cross-repo) and its internal
-    # relative call to validate-tag.yml works fine from that position —
-    # matching that proven-working shape here instead of inventing a new one.
-    uses: miikkak/workflows/.github/workflows/release-tarball.yml@main
-    with:
-      tag: ${{ inputs.tag || '' }}
+  release:
+    name: Build and Release
+    runs-on: [self-hosted, linux, generic]
+    timeout-minutes: 10
+    steps:
+      - name: Determine and validate tag
+        id: version
+        env:
+          INPUT_TAG: ${{ inputs.tag }}
+        run: |
+          set -Eeuo pipefail
+
+          if [[ -n "$INPUT_TAG" ]]; then
+            TAG="$INPUT_TAG"
+          else
+            REF="${{ github.ref }}"
+            TAG="${REF#refs/tags/}"
+          fi
+
+          # Validated for BOTH paths, not just workflow_dispatch: git tag
+          # names allow shell metacharacters ($, `, ;, (, ) etc. are not
+          # excluded by git-check-ref-format), and this repo's ruleset only
+          # protects refs/heads/main, not refs/tags/** — so a pushed tag is
+          # not inherently safe to interpolate unvalidated either. Also
+          # doubles as the same script-injection allowlist validate-tag.yml
+          # documents, before TAG is used below.
+          if ! [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[a-zA-Z0-9.-]+)?(\+[a-zA-Z0-9.-]+)?$ ]]; then
+            echo "❌ Invalid tag format: $TAG"
+            echo "   Expected format: vX.Y.Z (e.g., v1.2.3, v1.0.0-beta.1)"
+            exit 1
+          fi
+
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "🏷️  Release version: $TAG"
+
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ steps.version.outputs.tag }}
+          fetch-depth: 0
+
+      - name: Verify tag checkout
+        env:
+          EXPECTED_TAG: ${{ steps.version.outputs.tag }}
+        run: |
+          set -Eeuo pipefail
+          CURRENT_TAG=$(git describe --exact-match --tags HEAD 2>/dev/null || echo "")
+
+          if [[ "$CURRENT_TAG" != "$EXPECTED_TAG" ]]; then
+            echo "❌ Tag verification failed!"
+            echo "   Expected: $EXPECTED_TAG"
+            echo "   Current:  $CURRENT_TAG"
+            exit 1
+          fi
+
+          echo "✅ Successfully checked out tag: $EXPECTED_TAG"
+
+      - name: Create tarball
+        env:
+          TAG: ${{ steps.version.outputs.tag }}
+        run: |
+          set -Eeuo pipefail
+          TARBALL="workflows-${TAG}.tar.gz"
+          echo "📦 Creating tarball: $TARBALL"
+
+          TMPDIR_TAR=$(mktemp -d)
+          tar -czf "$TMPDIR_TAR/$TARBALL" \
+            --exclude='.git' \
+            --exclude='.github' \
+            --exclude='*.tar.gz' \
+            --exclude='node_modules' \
+            .
+          mv "$TMPDIR_TAR/$TARBALL" "$TARBALL"
+          rm -rf "$TMPDIR_TAR"
+
+          TAR_SIZE=$(stat -c%s "$TARBALL")
+          echo "✅ Created $TARBALL ($TAR_SIZE bytes)"
+          echo "TARBALL=$TARBALL" >> "$GITHUB_ENV"
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@3d0d9888cb7fd7b750713d6e236d1fcb99157228 # v3
+        with:
+          tag_name: ${{ steps.version.outputs.tag }}
+          name: Release ${{ steps.version.outputs.tag }}
+          draft: false
+          prerelease: false
+          generate_release_notes: true
+          files: ${{ env.TARBALL }}
