@@ -1,0 +1,33 @@
+---
+name: PR Validation (self)
+
+# This repo defines ci-cd.yml as a reusable workflow_call for consumer
+# repos — it can't also own the `pull_request` trigger without a naming
+# clash. This wrapper is the equivalent of every consumer repo's own
+# ci-cd.yml, calling the shared definition via a relative path.
+#
+# Without this, ci-cd.yml's verify-release-notes job — which dry-runs
+# semantic-release specifically to catch a broken npm dependency before it
+# merges (the miikkak/scripts#881/#882 incident this whole toolchain-
+# verification effort traces back to) — never actually ran on THIS repo's
+# own PRs, including its own package.json/.releaserc.json. Confirmed empty:
+# ci-cd.yml is single-trigger (workflow_call only), has zero job-level
+# uses: reusable-workflow calls, and no matrix strategy — the one shape
+# with zero observed startup_failure across everything tested chasing
+# #156/#161/#164/#165 (matches self-cd.yml -> cd.yml exactly).
+
+on: # yamllint disable-line rule:truthy
+  pull_request:
+    branches: [main]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  ci-cd:
+    uses: ./.github/workflows/ci-cd.yml
