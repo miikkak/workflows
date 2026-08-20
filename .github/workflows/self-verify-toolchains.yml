@@ -1,0 +1,96 @@
+---
+name: Verify Toolchains (self)
+
+# Successor to the verify-* jobs #153 added to ci-cd.yml (removed in #164 —
+# see #165). Those ran in every CONSUMER repo's PR, via a reusable-workflow
+# chain that reliably hit startup_failure. A bad pin only ever gets
+# introduced once, here, when Renovate proposes bumping a third-party
+# action digest in security-scan.yml/release-tarball.yml — those actions
+# are otherwise only exercised post-merge, on a schedule, or on a tag push
+# (miikkak/scripts#881/#882's structural gap, one layer up). Catching it
+# HERE, before the bump merges, means consumer repos never need to
+# re-verify the same shared code, and avoids the cross-repo self-reference
+# bug entirely rather than working around it.
+#
+# Deliberately zero job-level `uses:` reusable-workflow calls back into
+# this repo. While chasing #156/#161/#164/#165 this session, self-
+# referencing `uses:` reliably broke for security-scan.yml (multi-trigger:
+# schedule+workflow_dispatch+workflow_call, not just workflow_call),
+# dependency-check.yml (dynamic `strategy: matrix: fromJson(needs...)`),
+# and release-tarball.yml (nests a further call to validate-tag.yml) — three
+# different structural properties, each independently sufficient to break
+# it, with no single unifying rule found and no diagnostic detail from
+# GitHub beyond "workflow file issue". Given that, this inlines the pinned
+# third-party actions directly as plain steps instead of trying to find yet
+# another clever `uses:` shape — the same fix self-release.yml already
+# needed for the same underlying reason.
+#
+# dependency-check.yml isn't covered at all: its actual check logic (crane
+# digest lookups, gh api calls, Oracle registry auth) is driven entirely by
+# a per-repo .github/dependency-checks.yml config this repo doesn't have
+# and has no reason to — nothing here has binary versions/Docker base
+# images/GitHub releases to check. Noted as an accepted gap in #165.
+
+on: # yamllint disable-line rule:truthy
+  pull_request:
+    branches: [main]
+    paths:
+      - ".github/workflows/security-scan.yml"
+      - ".github/workflows/release-tarball.yml"
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  verify-trivy-action:
+    name: Verify Trivy Action Toolchain
+    runs-on: [self-hosted, linux, generic]
+    timeout-minutes: 10
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Run Trivy filesystem scanner
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          scan-type: "fs"
+          scan-ref: "."
+          format: "table"
+          severity: "CRITICAL,HIGH,MEDIUM"
+          exit-code: "0" # Don't fail the workflow, just report
+
+  verify-release-tarball-actions:
+    name: Verify Release Tarball Actions
+    runs-on: [self-hosted, linux, generic]
+    timeout-minutes: 5
+    steps:
+      - name: Create dummy artifact
+        run: echo "smoke-test-$(date -u +%s)" > smoke-test.txt
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: smoke-test-artifact
+          path: smoke-test.txt
+          retention-days: 1
+
+      - name: Remove local copy before download
+        run: rm smoke-test.txt
+
+      - name: Download artifact
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: smoke-test-artifact
+
+      - name: Verify roundtrip
+        run: |
+          set -Eeuo pipefail
+          if [[ ! -f smoke-test.txt ]]; then
+            echo "❌ Downloaded artifact missing"
+            exit 1
+          fi
+          echo "✅ upload-artifact/download-artifact roundtrip OK: $(cat smoke-test.txt)"

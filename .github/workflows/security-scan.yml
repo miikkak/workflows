@@ -1,4 +1,7 @@
 ---
+# Smoke-tested pre-merge by self-verify-toolchains.yml whenever this file
+# changes — see that file for why, and why it's a bare uses: with no
+# further nested reusable-workflow call.
 name: Scheduled Security Scan
 
 on: # yamllint disable-line rule:truthy
