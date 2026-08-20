@@ -10,7 +10,7 @@ name: PR Validation (self)
 # semantic-release specifically to catch a broken npm dependency before it
 # merges (the miikkak/scripts#881/#882 incident this whole toolchain-
 # verification effort traces back to) — never actually ran on THIS repo's
-# own PRs, including its own package.json/.releaserc.json. Confirmed empty:
+# own PRs, including its own package.json/.releaserc.json. Confirmed:
 # ci-cd.yml is single-trigger (workflow_call only), has zero job-level
 # uses: reusable-workflow calls, and no matrix strategy — the one shape
 # with zero observed startup_failure across everything tested chasing
@@ -24,8 +24,14 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
+# contents: write, not read: verify-release-notes' job-level permissions
+# request contents: write (semantic-release's verifyAuth() push probe
+# needs it even in --dry-run, see that job's own comment in ci-cd.yml) — a
+# workflow_call job can't escalate beyond what its top-level caller
+# granted, and this workflow file IS the top-level caller for this repo's
+# own PRs. Caused a second startup_failure until fixed here too.
 permissions:
-  contents: read
+  contents: write
   pull-requests: read
 
 jobs:
