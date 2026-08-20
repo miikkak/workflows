@@ -245,7 +245,7 @@ jobs:
 
 
   # ============================================================================
-  # Post-merge/scheduled-only toolchain smoke tests — REMOVED, see #164
+  # Post-merge/scheduled-only toolchain smoke tests — REMOVED, see #165
   # ============================================================================
   # #153 added verify-security-scan/verify-dependency-check/verify-release-tarball
   # here: jobs with `needs: [detect-changes, check-trigger]` PLUS a job-level
@@ -267,6 +267,6 @@ jobs:
   # work, but neither of those reusable-workflow jobs has a `needs:` on a
   # sibling regular job the way these three did.
   #
-  # See #164 for reinstating this coverage without a nested reusable-workflow
+  # See #165 for reinstating this coverage without a nested reusable-workflow
   # `uses:` — e.g. inlined smoke-test steps (the shape self-release.yml had to
   # move to for release-tarball.yml, for the same underlying reason).
