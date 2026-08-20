@@ -202,11 +202,19 @@ jobs:
     # generateNotes render cd.yml's real run performs, against this repo's
     # actual tags/commit history.
     #
-    # GITHUB_TOKEN is intentionally left at the workflow's default
-    # `contents: read, pull-requests: read` — --dry-run never pushes, so no
-    # write scope is needed here.
+    # contents: write, despite --dry-run never actually pushing: semantic-
+    # release's verifyAuth() runs `git push --dry-run` as a genuine no-op
+    # permission probe, and with contents: read that probe fails outright
+    # (not a branch-mismatch issue) — which then falls through to a second
+    # check (isBranchUpToDate, comparing local HEAD against the real
+    # remote main tip) that can never pass for a PR's synthetic merge
+    # commit regardless of any branch-name spoofing. Confirmed empirically:
+    # with contents: read, the verifyAuth push probe fails outright
+    # (permission denied), and the run short-circuits at "The local branch
+    # main is behind the remote one" instead of ever reaching "Allowed to
+    # push to the Git repository".
     permissions:
-      contents: read
+      contents: write
     steps:
       # Default checkout for a pull_request event fetches GitHub's synthetic
       # refs/pull/N/merge commit (base + PR head merged) in detached HEAD
