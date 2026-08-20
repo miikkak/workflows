@@ -281,6 +281,10 @@ jobs:
     # level takes no expressions, so the ref can't be pinned to this exact
     # commit — `@main` is the closest static approximation, acceptable
     # since consumer repos only ever reference already-merged digests.
+    # main is protected (PR + status checks required, no bypass actors —
+    # see #157) but still moves on every merge; once this repo's first tag
+    # exists (semantic-release added alongside this fix), a fast-follow PR
+    # should repoint all three verify-* jobs at @vN instead.
     uses: miikkak/workflows/.github/workflows/security-scan.yml@main
     with:
       runner: ${{ inputs.runner }}
