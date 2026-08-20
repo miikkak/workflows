@@ -57,18 +57,22 @@ jobs:
 
           if [[ -n "$INPUT_TAG" ]]; then
             TAG="$INPUT_TAG"
-            # Same allowlist validate-tag.yml enforces: also blocks script
-            # injection via this free-text workflow_dispatch input, since
-            # shell metacharacters never match the regex, before TAG is
-            # used below.
-            if ! [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[a-zA-Z0-9.-]+)?(\+[a-zA-Z0-9.-]+)?$ ]]; then
-              echo "❌ Invalid tag format: $TAG"
-              echo "   Expected format: vX.Y.Z (e.g., v1.2.3, v1.0.0-beta.1)"
-              exit 1
-            fi
           else
             REF="${{ github.ref }}"
             TAG="${REF#refs/tags/}"
+          fi
+
+          # Validated for BOTH paths, not just workflow_dispatch: git tag
+          # names allow shell metacharacters ($, `, ;, (, ) etc. are not
+          # excluded by git-check-ref-format), and this repo's ruleset only
+          # protects refs/heads/main, not refs/tags/** — so a pushed tag is
+          # not inherently safe to interpolate unvalidated either. Also
+          # doubles as the same script-injection allowlist validate-tag.yml
+          # documents, before TAG is used below.
+          if ! [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[a-zA-Z0-9.-]+)?(\+[a-zA-Z0-9.-]+)?$ ]]; then
+            echo "❌ Invalid tag format: $TAG"
+            echo "   Expected format: vX.Y.Z (e.g., v1.2.3, v1.0.0-beta.1)"
+            exit 1
           fi
 
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
@@ -114,7 +118,7 @@ jobs:
           mv "$TMPDIR_TAR/$TARBALL" "$TARBALL"
           rm -rf "$TMPDIR_TAR"
 
-          TAR_SIZE=$(stat -c%s "$TARBALL" 2>/dev/null || stat -f%z "$TARBALL")
+          TAR_SIZE=$(stat -c%s "$TARBALL")
           echo "✅ Created $TARBALL ($TAR_SIZE bytes)"
           echo "TARBALL=$TARBALL" >> "$GITHUB_ENV"
 
