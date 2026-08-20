@@ -308,12 +308,17 @@ jobs:
 
             console.log('✅ Pull request created:', pr.html_url);
 
-            // Add labels
+            // Add labels. release:none because this PR only commits a
+            // marker file (.github/.last-update-check) for manual review —
+            // it never changes what's actually deployed, and that file
+            // isn't in every consumer repo's label-check.yml
+            // exempt_patterns, so Release Label Check otherwise blocks
+            // forever waiting for a label this workflow never applied.
             await github.rest.issues.addLabels({
               owner: context.repo.owner,
               repo: context.repo.repo,
               issue_number: pr.number,
-              labels: ['dependencies', 'automated']
+              labels: ['dependencies', 'automated', 'release:none']
             });
 
   skip-notification:
