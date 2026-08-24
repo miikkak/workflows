@@ -702,10 +702,11 @@ jobs:
           # feed is disabled too: these runners get a consistent 403 from it, and
           # with no locally cached fallback that's a fatal error, not a warning.
           echo "exit_code=${exit_code}" >> "$GITHUB_OUTPUT"
-          # --failOnCVSS makes the tool exit non-zero (1) once a finding at/above the threshold
-          # shows up, so a nonzero code here means "vulnerabilities found", not "tool broke" -
-          # same distinction govulncheck's exit code 3 makes above.
-          if [[ "${exit_code}" != "0" && "${exit_code}" != "1" ]]; then
+          # --failOnCVSS makes the tool exit 15 once a finding at/above the threshold
+          # shows up (verified against dependency-check-cli 12.1.0's App.class), so
+          # that code here means "vulnerabilities found", not "tool broke" - same
+          # distinction govulncheck's exit code 3 makes above.
+          if [[ "${exit_code}" != "0" && "${exit_code}" != "15" ]]; then
             echo "::error::dependency-check failed to run (exit code ${exit_code})"
             exit "${exit_code}"
           fi
@@ -814,7 +815,7 @@ jobs:
       - name: Fail on critical vulnerabilities
         if: >-
           steps.check_java.outputs.has_java == 'true' &&
-          steps.dependency-check.outputs.exit_code == '1'
+          steps.dependency-check.outputs.exit_code == '15'
         run: |
           echo "::error::dependency-check found vulnerabilities at/above CVSS 9 - see the dependency-check step above"
           exit 1
