@@ -134,7 +134,10 @@ jobs:
       # release tooling" step) no longer vendor one, so there's nothing
       # local to dry-run here; that verification now happens once, in
       # miikkak/workflows' own PR pipeline, whenever ITS package.json/
-      # .releaserc.json change.
+      # .releaserc.json change. Skipped like dep-check-config above when
+      # release-config is false, so has-local-release-tooling is left unset
+      # on those runs — safe only because verify-release-notes' `if` checks
+      # release-config == 'true' first and short-circuits before reading it.
       - name: Check for local release tooling
         if: steps.filter.outputs.release-config == 'true'
         id: release-tooling-exists
