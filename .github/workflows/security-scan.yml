@@ -669,11 +669,19 @@ jobs:
           exit_code=0
           mkdir -p dependency-check-report
           nvd_data_dir=/srv/github-runner/dependency-check-data
+          # All dependency-check jobs on this runner execute as the same
+          # github-runner service account, so a fixed mode is sufficient -
+          # this isn't shared across different runner users.
           mkdir -p "$nvd_data_dir"
+          chmod 750 "$nvd_data_dir"
           # The shared database is a single H2 file; serialize access so concurrent
           # jobs on this runner (different repos, same schedule) don't corrupt it.
           exec 200>"$nvd_data_dir/.lock"
-          flock -w 1800 200
+          if ! flock -w 1800 200; then
+            echo "::error::timed out after 30m waiting for the dependency-check NVD lock" \
+              "(${nvd_data_dir}/.lock) - another job is likely still running a cold sync"
+            exit 1
+          fi
           "$RUNNER_TEMP/dependency-check-bin/dependency-check/bin/dependency-check.sh" \
             --project "${{ github.event.repository.name }}" \
             --scan . \
