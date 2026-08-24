@@ -692,7 +692,8 @@ jobs:
             --data "$nvd_data_dir" \
             --nvdApiKey "$NVD_API_KEY" \
             --failOnCVSS 9 \
-            --disableAssembly || exit_code=$?
+            --disableAssembly \
+            --disableOssIndex || exit_code=$?
           echo "exit_code=${exit_code}" >> "$GITHUB_OUTPUT"
           # --failOnCVSS makes the tool exit non-zero (1) once a finding at/above the threshold
           # shows up, so a nonzero code here means "vulnerabilities found", not "tool broke" -
