@@ -682,7 +682,6 @@ jobs:
             --exclude "**/build/**" \
             --exclude "**/.gradle/**" \
             --format JSON \
-            --format TABLE \
             --out dependency-check-report \
             --data "$RUNNER_TEMP/dependency-check-data" \
             --nvdApiKey "$NVD_API_KEY" \
