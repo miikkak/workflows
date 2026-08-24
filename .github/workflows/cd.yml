@@ -71,6 +71,11 @@ permissions:
 #
 # Release flow: label-gated semantic-release creates tag → tag push
 # triggers release.yml → artifact/image build → release created
+#
+# The semantic-release job's package.json/package-lock.json/.releaserc.json
+# live in THIS repo (checked out fresh into the consumer's workspace by the
+# "Checkout release tooling" step below) rather than being vendored per
+# consumer — one lockfile to patch instead of one per repo.
 # ==============================================================================
 
 jobs:
@@ -254,6 +259,39 @@ jobs:
             echo "ℹ️  No release label found - skipping release"
             echo "should_release=false" >> "$GITHUB_OUTPUT"
           fi
+
+      - name: Resolve release tooling ref
+        id: tooling_ref
+        if: steps.check_label.outputs.should_release == 'true'
+        env:
+          # workflow_ref is this file's own path@ref as the caller invoked
+          # it (e.g. "miikkak/workflows/.github/workflows/cd.yml@<sha>"),
+          # which is exactly the version of miikkak/workflows the caller
+          # pinned — so the release tooling always matches the pinned cd.yml.
+          WORKFLOW_REF: ${{ github.workflow_ref }}
+        run: echo "ref=${WORKFLOW_REF##*@}" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout release tooling
+        if: steps.check_label.outputs.should_release == 'true'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          repository: miikkak/workflows
+          ref: ${{ steps.tooling_ref.outputs.ref }}
+          sparse-checkout: |
+            package.json
+            package-lock.json
+            .releaserc.json
+          sparse-checkout-cone-mode: false
+          path: .release-tooling
+
+      - name: Stage release tooling
+        # semantic-release's own package.json/lockfile/config are owned by
+        # miikkak/workflows (see Checkout release tooling above) so every
+        # consumer patches this dependency tree in one place instead of 24.
+        if: steps.check_label.outputs.should_release == 'true'
+        run: |
+          cp .release-tooling/package.json .release-tooling/package-lock.json .release-tooling/.releaserc.json ./
+          rm -rf .release-tooling
 
       - name: Setup Node.js
         if: runner.environment == 'github-hosted' && (steps.check_label.outputs.should_release == 'true')
