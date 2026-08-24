@@ -595,7 +595,12 @@ jobs:
   dependency-check:
     name: OWASP Dependency-Check
     runs-on: ${{ fromJson(inputs.runner || '["self-hosted","linux","generic"]') }}
-    timeout-minutes: 20
+    # A cold NVD cache (first run for a repo, or a fully-expired weekly cache) has to
+    # pull the entire ~380k-CVE corpus instead of an incremental delta, which routinely
+    # takes 20-30+ minutes even with an API key. 20 minutes was cutting it too close and
+    # cancelling the job also throws away the partially-built cache, forcing a full
+    # cold-start retry next time.
+    timeout-minutes: 45
     permissions:
       contents: read
       issues: write
@@ -648,25 +653,12 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
 
-      # NVD's own CVE feed API is aggressively rate-limited without a key, so this cache
-      # persists the downloaded/updated vulnerability database across weekly runs instead of
-      # re-syncing it from scratch every time. Weekly key so it still refreshes regularly;
-      # restore-keys falls back to the most recent cache to keep the update incremental even
-      # when the exact week's cache is missing.
-      - name: Compute cache week
-        if: steps.check_java.outputs.has_java == 'true'
-        id: cache_week
-        run: echo "week=$(date -u +%G-W%V)" >> "$GITHUB_OUTPUT"
-
-      - name: Cache NVD data
-        if: steps.check_java.outputs.has_java == 'true'
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
-        with:
-          path: ${{ runner.temp }}/dependency-check-data
-          key: dependency-check-data-${{ github.event.repository.name }}-${{ steps.cache_week.outputs.week }}
-          restore-keys: |
-            dependency-check-data-${{ github.event.repository.name }}-
-
+      # The NVD vulnerability database isn't repo-specific, and these runners are
+      # self-hosted on a persistent /srv volume, so the database lives in a fixed
+      # host directory shared across every repo's dependency-check job instead of a
+      # per-repo GitHub Actions cache. Only the very first scan on a given runner
+      # ever pays for a full cold sync; every job after that (any repo) does a fast
+      # incremental update, with no cache upload/download round-trip either.
       - name: Run OWASP Dependency-Check
         if: steps.check_java.outputs.has_java == 'true'
         id: dependency-check
@@ -676,6 +668,20 @@ jobs:
           set -Eeuo pipefail
           exit_code=0
           mkdir -p dependency-check-report
+          nvd_data_dir=/srv/github-runner/dependency-check-data
+          # All dependency-check jobs on this runner execute as the same
+          # github-runner service account, so a fixed mode is sufficient -
+          # this isn't shared across different runner users.
+          mkdir -p "$nvd_data_dir"
+          chmod 750 "$nvd_data_dir"
+          # The shared database is a single H2 file; serialize access so concurrent
+          # jobs on this runner (different repos, same schedule) don't corrupt it.
+          exec 200>"$nvd_data_dir/.lock"
+          if ! flock -w 1800 200; then
+            echo "::error::timed out after 30m waiting for the dependency-check NVD lock" \
+              "(${nvd_data_dir}/.lock) - another job is likely still running a cold sync"
+            exit 1
+          fi
           "$RUNNER_TEMP/dependency-check-bin/dependency-check/bin/dependency-check.sh" \
             --project "${{ github.event.repository.name }}" \
             --scan . \
@@ -683,7 +689,7 @@ jobs:
             --exclude "**/.gradle/**" \
             --format JSON \
             --out dependency-check-report \
-            --data "$RUNNER_TEMP/dependency-check-data" \
+            --data "$nvd_data_dir" \
             --nvdApiKey "$NVD_API_KEY" \
             --failOnCVSS 9 \
             --disableAssembly || exit_code=$?
