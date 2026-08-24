@@ -675,6 +675,7 @@ jobs:
         run: |
           set -Eeuo pipefail
           exit_code=0
+          mkdir -p dependency-check-report
           "$RUNNER_TEMP/dependency-check-bin/dependency-check/bin/dependency-check.sh" \
             --project "${{ github.event.repository.name }}" \
             --scan . \
