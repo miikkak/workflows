@@ -694,10 +694,13 @@ jobs:
             --failOnCVSS 9 \
             --disableAssembly \
             --disableOssIndex \
+            --disableKnownExploited \
             || exit_code=$?
           # OSS Index is disabled (no credentials configured, anonymous calls hit
           # Sonatype's rate limit and hard-fail the job) - NVD stays the
-          # authoritative CVE source for the --failOnCVSS gate above.
+          # authoritative CVE source for the --failOnCVSS gate above. The CISA KEV
+          # feed is disabled too: these runners get a consistent 403 from it, and
+          # with no locally cached fallback that's a fatal error, not a warning.
           echo "exit_code=${exit_code}" >> "$GITHUB_OUTPUT"
           # --failOnCVSS makes the tool exit non-zero (1) once a finding at/above the threshold
           # shows up, so a nonzero code here means "vulnerabilities found", not "tool broke" -
