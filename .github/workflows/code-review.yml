@@ -460,7 +460,7 @@ jobs:
                           "patterns. Do not review unchanged code — only flag issues "
                           "introduced by the diff.\n\n" + file_context
                       ),
-                      "cache_control": {"type": "ephemeral"},
+                      "cache_control": {"type": "ephemeral", "ttl": "1h"},
                   })
               if issue_context:
                   content_blocks.append({
@@ -470,7 +470,7 @@ jobs:
                           "keywords in the PR description) and explain why this change was "
                           "made:\n\n" + issue_context
                       ),
-                      "cache_control": {"type": "ephemeral"},
+                      "cache_control": {"type": "ephemeral", "ttl": "1h"},
                   })
               prior_parts = []
               if prior_must_fix_blocks:
@@ -504,7 +504,7 @@ jobs:
                   content_blocks.append({
                       "type": "text",
                       "text": '\n\n---\n\n'.join(prior_parts),
-                      "cache_control": {"type": "ephemeral"},
+                      "cache_control": {"type": "ephemeral", "ttl": "1h"},
                   })
               if human_feedback:
                   content_blocks.append({
@@ -522,7 +522,7 @@ jobs:
                           "diff has changed in a way that changes the analysis:\n\n"
                           + human_feedback
                       ),
-                      "cache_control": {"type": "ephemeral"},
+                      "cache_control": {"type": "ephemeral", "ttl": "1h"},
                   })
               content_blocks.append({
                   "type": "text",
@@ -540,7 +540,7 @@ jobs:
                   system=[{
                       "type": "text",
                       "text": system_prompt,
-                      "cache_control": {"type": "ephemeral"}
+                      "cache_control": {"type": "ephemeral", "ttl": "1h"}
                   }],
                   messages=[{
                       "role": "user",
