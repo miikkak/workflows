@@ -2,6 +2,11 @@
 name: Gradle Lockfile Refresh
 
 on: # yamllint disable-line rule:truthy
+  # Requires the caller to wire this into a plain `pull_request` trigger
+  # (never `pull_request_target`): the guards below read
+  # `github.event.pull_request`, which is only populated when the caller
+  # forwards a pull_request event, and the head-repo check below only makes
+  # sense under `pull_request`'s non-privileged, PR-head-checkout semantics.
   workflow_call:
     inputs:
       runner:
@@ -49,7 +54,16 @@ permissions:
 jobs:
   refresh-lockfile:
     name: Refresh gradle.lockfile
-    if: github.event.pull_request.user.login == 'renovate[bot]'
+    # Both the PR author AND the head repo are checked: Renovate always
+    # opens same-repo branches (never a fork), so a head repo mismatch here
+    # means the login check is being spoofed by a PR opened from a fork -
+    # e.g. a collaborator naming their fork's owner 'renovate[bot]', or a
+    # rename race. Rejecting that keeps `./gradlew` (arbitrary build-script
+    # execution) and the write-capable PULL_REQUEST_TOKEN from ever running
+    # against untrusted, externally-controlled content.
+    if: |
+      github.event.pull_request.user.login == 'renovate[bot]' &&
+      github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ${{ fromJson(inputs.runner || '["self-hosted","linux","generic"]') }}
     timeout-minutes: 10
     steps:
@@ -77,4 +91,7 @@ jobs:
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add gradle.lockfile
           git commit -m "chore(deps): regenerate gradle.lockfile"
-          git push origin "HEAD:${HEAD_REF}"
+          # --force-with-lease guards against a concurrent push (e.g. a
+          # Renovate rebase) landing on this branch between checkout and
+          # push, rather than silently clobbering it.
+          git push --force-with-lease origin "HEAD:${HEAD_REF}"
