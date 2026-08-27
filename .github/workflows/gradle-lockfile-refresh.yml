@@ -1,0 +1,120 @@
+---
+name: Gradle Lockfile Refresh
+
+on: # yamllint disable-line rule:truthy
+  # Requires the caller to wire this into a plain `pull_request` trigger
+  # (never `pull_request_target`): the guards below read
+  # `github.event.pull_request`, which is only populated when the caller
+  # forwards a pull_request event, and the head-repo check below only makes
+  # sense under `pull_request`'s non-privileged, PR-head-checkout semantics.
+  workflow_call:
+    inputs:
+      runner:
+        description: Runner labels as a JSON array string (e.g. '["self-hosted","linux","generic"]')
+        type: string
+        default: '["self-hosted","linux","generic"]'
+    secrets:
+      PULL_REQUEST_TOKEN:
+        description: >-
+          PAT used to push the regenerated lockfile back to the PR branch.
+          Required: a push made with the default GITHUB_TOKEN does not
+          trigger downstream pull_request-triggered workflows (the
+          anti-recursion guard), so the PR's own test suite would never
+          re-run against the fixed lockfile. Falls back to GITHUB_TOKEN if
+          omitted, which still fixes the file but leaves the stale (failing)
+          check run in place until some other event re-triggers CI.
+        required: false
+
+permissions:
+  contents: write
+
+# ==============================================================================
+# SHARED WORKFLOW - gradle-lockfile-refresh.yml
+# ==============================================================================
+# Renovate/Mend bumps a dependency version in build.gradle.kts but has no
+# concept of Gradle's dependency locking, so it never regenerates
+# gradle.lockfile. With dependencyLocking enabled (see each consumer's
+# build.gradle.kts), that leaves the lockfile pinning the OLD version as a
+# `strictly` constraint, and compileClasspath resolution fails outright:
+#
+#   Cannot find a version of '<group>:<artifact>' that satisfies the version
+#   constraints: ... Dependency version enforced by Dependency Locking
+#
+# This workflow regenerates the lockfile against whatever version Renovate
+# just bumped to and pushes the fix straight to the PR branch, so the PR's
+# existing test-suite run (re-triggered by this push) passes without a human
+# ever running `./gradlew dependencies --write-locks` by hand.
+#
+# Gated on the PR actor being Renovate: a human editing build.gradle.kts is
+# expected to regenerate the lockfile themselves as part of their change
+# (see each repo's README), and this workflow silently overwriting an
+# in-progress manual edit would be surprising.
+# ==============================================================================
+
+jobs:
+  refresh-lockfile:
+    name: Refresh gradle.lockfile
+    # Three checks, because none alone pins down who actually controls the
+    # content this job builds and pushes with a privileged token:
+    #   - pull_request.user.login: who opened the PR (stays 'renovate[bot]'
+    #     even if someone else later pushes to the branch)
+    #   - github.actor: who triggered THIS run - i.e. who pushed the commit
+    #     actually being built, catching a collaborator adding commits to
+    #     the Renovate branch after the PR was opened (same-repo branches
+    #     are pushable by any collaborator with write access)
+    #   - head.repo.full_name: rules out a fork spoofing the login check
+    # A step-level authorship check on the actual checked-out HEAD commit
+    # (below) closes the remaining gap: a synchronize event's actor is
+    # whoever ran the push, but git commit authorship is what determines
+    # whose content ./gradlew actually executes.
+    if: |
+      github.event.pull_request.user.login == 'renovate[bot]' &&
+      github.actor == 'renovate[bot]' &&
+      github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ${{ fromJson(inputs.runner || '["self-hosted","linux","generic"]') }}
+    timeout-minutes: 10
+    steps:
+      - name: Checkout PR branch
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ github.event.pull_request.head.ref }}
+          token: ${{ secrets.PULL_REQUEST_TOKEN || github.token }}
+
+      - name: Verify head commit is Renovate's own
+        # The job-level `if` checks event metadata (who opened the PR, who
+        # triggered this run); this checks the actual content about to be
+        # built. If a collaborator pushed an extra commit to the Renovate
+        # branch in the gap between that push and this job starting, its
+        # author won't be Renovate's bot identity even though github.actor
+        # was renovate[bot] for whatever push did trigger this run.
+        run: |
+          set -Eeuo pipefail
+          author_email=$(git log -1 --format='%ae')
+          if [[ "$author_email" != "29139614+renovate[bot]@users.noreply.github.com" ]]; then
+            echo "::error::HEAD commit author ($author_email) is not Renovate - refusing to run"
+            echo "::error::untrusted build content."
+            exit 1
+          fi
+
+      - name: Regenerate lockfile
+        run: ./gradlew dependencies --write-locks --no-daemon
+
+      - name: Commit and push if changed
+        env:
+          HEAD_REF: ${{ github.event.pull_request.head.ref }}
+        run: |
+          set -Eeuo pipefail
+
+          if git diff --quiet -- gradle.lockfile; then
+            echo "✅ gradle.lockfile already up to date"
+            exit 0
+          fi
+
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add gradle.lockfile
+          git commit -m "chore(deps): regenerate gradle.lockfile"
+          # --force-with-lease guards against a concurrent push (e.g. a
+          # Renovate rebase) landing on this branch between checkout and
+          # push, rather than silently clobbering it.
+          git push --force-with-lease origin "HEAD:${HEAD_REF}"
