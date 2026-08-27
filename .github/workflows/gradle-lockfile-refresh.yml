@@ -1,0 +1,80 @@
+---
+name: Gradle Lockfile Refresh
+
+on: # yamllint disable-line rule:truthy
+  workflow_call:
+    inputs:
+      runner:
+        description: Runner labels as a JSON array string (e.g. '["self-hosted","linux","generic"]')
+        type: string
+        default: '["self-hosted","linux","generic"]'
+    secrets:
+      PULL_REQUEST_TOKEN:
+        description: >-
+          PAT used to push the regenerated lockfile back to the PR branch.
+          Required: a push made with the default GITHUB_TOKEN does not
+          trigger downstream pull_request-triggered workflows (the
+          anti-recursion guard), so the PR's own test suite would never
+          re-run against the fixed lockfile. Falls back to GITHUB_TOKEN if
+          omitted, which still fixes the file but leaves the stale (failing)
+          check run in place until some other event re-triggers CI.
+        required: false
+
+permissions:
+  contents: write
+
+# ==============================================================================
+# SHARED WORKFLOW - gradle-lockfile-refresh.yml
+# ==============================================================================
+# Renovate/Mend bumps a dependency version in build.gradle.kts but has no
+# concept of Gradle's dependency locking, so it never regenerates
+# gradle.lockfile. With dependencyLocking enabled (see each consumer's
+# build.gradle.kts), that leaves the lockfile pinning the OLD version as a
+# `strictly` constraint, and compileClasspath resolution fails outright:
+#
+#   Cannot find a version of '<group>:<artifact>' that satisfies the version
+#   constraints: ... Dependency version enforced by Dependency Locking
+#
+# This workflow regenerates the lockfile against whatever version Renovate
+# just bumped to and pushes the fix straight to the PR branch, so the PR's
+# existing test-suite run (re-triggered by this push) passes without a human
+# ever running `./gradlew dependencies --write-locks` by hand.
+#
+# Gated on the PR actor being Renovate: a human editing build.gradle.kts is
+# expected to regenerate the lockfile themselves as part of their change
+# (see each repo's README), and this workflow silently overwriting an
+# in-progress manual edit would be surprising.
+# ==============================================================================
+
+jobs:
+  refresh-lockfile:
+    name: Refresh gradle.lockfile
+    if: github.event.pull_request.user.login == 'renovate[bot]'
+    runs-on: ${{ fromJson(inputs.runner || '["self-hosted","linux","generic"]') }}
+    timeout-minutes: 10
+    steps:
+      - name: Checkout PR branch
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ github.event.pull_request.head.ref }}
+          token: ${{ secrets.PULL_REQUEST_TOKEN || github.token }}
+
+      - name: Regenerate lockfile
+        run: ./gradlew dependencies --write-locks --no-daemon
+
+      - name: Commit and push if changed
+        env:
+          HEAD_REF: ${{ github.event.pull_request.head.ref }}
+        run: |
+          set -Eeuo pipefail
+
+          if git diff --quiet -- gradle.lockfile; then
+            echo "✅ gradle.lockfile already up to date"
+            exit 0
+          fi
+
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add gradle.lockfile
+          git commit -m "chore(deps): regenerate gradle.lockfile"
+          git push origin "HEAD:${HEAD_REF}"
