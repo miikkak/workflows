@@ -54,15 +54,22 @@ permissions:
 jobs:
   refresh-lockfile:
     name: Refresh gradle.lockfile
-    # Both the PR author AND the head repo are checked: Renovate always
-    # opens same-repo branches (never a fork), so a head repo mismatch here
-    # means the login check is being spoofed by a PR opened from a fork -
-    # e.g. a collaborator naming their fork's owner 'renovate[bot]', or a
-    # rename race. Rejecting that keeps `./gradlew` (arbitrary build-script
-    # execution) and the write-capable PULL_REQUEST_TOKEN from ever running
-    # against untrusted, externally-controlled content.
+    # Three checks, because none alone pins down who actually controls the
+    # content this job builds and pushes with a privileged token:
+    #   - pull_request.user.login: who opened the PR (stays 'renovate[bot]'
+    #     even if someone else later pushes to the branch)
+    #   - github.actor: who triggered THIS run - i.e. who pushed the commit
+    #     actually being built, catching a collaborator adding commits to
+    #     the Renovate branch after the PR was opened (same-repo branches
+    #     are pushable by any collaborator with write access)
+    #   - head.repo.full_name: rules out a fork spoofing the login check
+    # A step-level authorship check on the actual checked-out HEAD commit
+    # (below) closes the remaining gap: a synchronize event's actor is
+    # whoever ran the push, but git commit authorship is what determines
+    # whose content ./gradlew actually executes.
     if: |
       github.event.pull_request.user.login == 'renovate[bot]' &&
+      github.actor == 'renovate[bot]' &&
       github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ${{ fromJson(inputs.runner || '["self-hosted","linux","generic"]') }}
     timeout-minutes: 10
@@ -72,6 +79,22 @@ jobs:
         with:
           ref: ${{ github.event.pull_request.head.ref }}
           token: ${{ secrets.PULL_REQUEST_TOKEN || github.token }}
+
+      - name: Verify head commit is Renovate's own
+        # The job-level `if` checks event metadata (who opened the PR, who
+        # triggered this run); this checks the actual content about to be
+        # built. If a collaborator pushed an extra commit to the Renovate
+        # branch in the gap between that push and this job starting, its
+        # author won't be Renovate's bot identity even though github.actor
+        # was renovate[bot] for whatever push did trigger this run.
+        run: |
+          set -Eeuo pipefail
+          author_email=$(git log -1 --format='%ae')
+          if [[ "$author_email" != "29139614+renovate[bot]@users.noreply.github.com" ]]; then
+            echo "::error::HEAD commit author ($author_email) is not Renovate - refusing to run"
+            echo "::error::untrusted build content."
+            exit 1
+          fi
 
       - name: Regenerate lockfile
         run: ./gradlew dependencies --write-locks --no-daemon
