@@ -410,10 +410,14 @@ jobs:
               ;;
             apk-security-updates)
               echo "update-available=${APK_UPDATE}" >> "$GITHUB_OUTPUT"
+              # Randomized delimiter here too - re-serializing APK_SUMMARY
+              # with a fixed delimiter would reintroduce the same collision
+              # risk the upstream step already guards against.
+              RESULT_DELIM="APK_SUMMARY_EOF_${GITHUB_RUN_ID:-0}_${RANDOM}"
               {
-                echo "summary<<APK_SUMMARY_EOF"
+                echo "summary<<${RESULT_DELIM}"
                 echo "${APK_SUMMARY}"
-                echo "APK_SUMMARY_EOF"
+                echo "${RESULT_DELIM}"
               } >> "$GITHUB_OUTPUT"
               echo "dispatch-value=true" >> "$GITHUB_OUTPUT"
               ;;
