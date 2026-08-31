@@ -616,10 +616,11 @@ jobs:
                   ],
               )
               content = response.choices[0].message.content
-              if not content:
-                  # Treat empty/None content (e.g. a model that only emitted a
-                  # tool call or reasoning trace) as a fallback failure rather
-                  # than crashing the whole review step on the .strip() call below.
+              if not content or not content.strip():
+                  # Treat empty/whitespace-only/None content (e.g. a model that
+                  # only emitted a tool call or reasoning trace) as a fallback
+                  # failure rather than crashing the whole review step on the
+                  # .strip().splitlines()[-1] call below.
                   raise ValueError(f"OpenRouter returned empty content (model={model})")
               return content, model
 
