@@ -335,7 +335,7 @@ jobs:
             | grep -oE 'sha256:[0-9a-f]{64}' | head -1 || echo "")
           PINNED_IMAGE="$FULL_IMAGE"
           if [[ -n "$DIGEST" ]]; then
-            PINNED_IMAGE="${FULL_IMAGE%%:*}@${DIGEST}"
+            PINNED_IMAGE="${FULL_IMAGE%:*}@${DIGEST}"
           fi
           echo "📦 Checking apk packages for: $PINNED_IMAGE"
 
