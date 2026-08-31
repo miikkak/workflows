@@ -329,8 +329,10 @@ jobs:
 
           # Test against the exact digest pinned in the file, if present, so
           # the check reflects what's actually built today, not a moving tag.
-          DIGEST=$(grep -Fm1 "FROM ${FULL_IMAGE}" "$FILE" \
-            | grep -oE 'sha256:[0-9a-f]{64}' || echo "")
+          # awk match (not grep -F substring) so e.g. "alpine:3.24" can't
+          # match a "FROM alpine:3.24-edge@..." line.
+          DIGEST=$(awk -v img="${FULL_IMAGE}@" '$1=="FROM" && index($2, img)==1 {print $2}' "$FILE" \
+            | grep -oE 'sha256:[0-9a-f]{64}' | head -1 || echo "")
           PINNED_IMAGE="$FULL_IMAGE"
           if [[ -n "$DIGEST" ]]; then
             PINNED_IMAGE="${FULL_IMAGE%%:*}@${DIGEST}"
@@ -342,17 +344,26 @@ jobs:
           # security fix can land in the apk index without the image tag
           # ever changing. Compare against a container booted from the
           # exact pinned digest to catch that case.
-          UPGRADES=$(docker run --rm "$PINNED_IMAGE" \
-            sh -c 'apk update >/dev/null 2>&1 && apk list -u 2>/dev/null' || echo "")
+          #
+          # Fail the step on a pull/inspect error instead of treating it as
+          # "no update available" - a network blip should not be reported as
+          # a clean scan.
+          if ! UPGRADES=$(docker run --rm --pull=always "$PINNED_IMAGE" \
+            sh -c 'apk update >/dev/null 2>&1 && apk list -u 2>/dev/null'); then
+            echo "❌ Failed to inspect apk packages for $PINNED_IMAGE"
+            exit 1
+          fi
 
           if [[ -n "$UPGRADES" ]]; then
             echo "update-available=true" >> "$GITHUB_OUTPUT"
             echo "⚠️ Package updates available:"
             echo "$UPGRADES"
+            # Unique delimiter so it can't collide with a line in $UPGRADES
+            DELIM="APK_SUMMARY_EOF_${GITHUB_RUN_ID:-0}_${RANDOM}"
             {
-              echo "summary<<APK_SUMMARY_EOF"
+              echo "summary<<${DELIM}"
               echo "$UPGRADES"
-              echo "APK_SUMMARY_EOF"
+              echo "${DELIM}"
             } >> "$GITHUB_OUTPUT"
           else
             echo "update-available=false" >> "$GITHUB_OUTPUT"
@@ -527,12 +538,14 @@ jobs:
           AUTO_UPDATE_INPUT: ${{ matrix.auto-update-input }}
           CHECK_TYPE: ${{ matrix.type }}
           CHECK_NAME: ${{ matrix.name }}
+          CHECK_FILE: ${{ matrix.file }}
           DISPATCH_VALUE: ${{ steps.result.outputs.dispatch-value }}
         with:
           script: |
             const workflowId = process.env.AUTO_UPDATE_WORKFLOW;
             const checkType = process.env.CHECK_TYPE;
             const checkName = process.env.CHECK_NAME;
+            const checkFile = process.env.CHECK_FILE;
             const dispatchValue = process.env.DISPATCH_VALUE;
 
             // Determine input key: explicit override, or type-based default
@@ -545,10 +558,15 @@ jobs:
 
             const inputs = { [inputKey]: dispatchValue };
             // apk-security-updates has no meaningful version/digest to bump -
-            // pass the check name too so the target workflow can close the
-            // matching tracking issue by title.
+            // pass the check name (to close the matching tracking issue by
+            // title) and the Dockerfile path (matrix.file) it checked, so
+            // the rebuild workflow edits the same file rather than assuming
+            // a root Dockerfile.
             if (checkType === 'apk-security-updates') {
               inputs['check-name'] = checkName;
+              if (checkFile) {
+                inputs['dockerfile-path'] = checkFile;
+              }
             }
 
             console.log(`🤖 Dispatching ${workflowId} with ${JSON.stringify(inputs)}`);
