@@ -589,15 +589,15 @@ jobs:
               # OpenRouter exposes an OpenAI-compatible API, so the existing openai
               # SDK covers this too — no extra dependency needed. Used only as a
               # last-resort fallback when a primary provider call fails (bad status
-              # code or connection error): a free-tier model, picked for
-              # availability over quality, so the PR still gets some review rather
-              # than none.
+              # code or connection error). "openrouter/free" is OpenRouter's own
+              # auto-router over its free-tier models, picked for availability
+              # over quality, so the PR still gets some review rather than none.
               client = openai.OpenAI(
                   base_url="https://openrouter.ai/api/v1",
                   api_key=os.environ['OPENROUTER_API_KEY'],
                   max_retries=1,
               )
-              model = os.environ.get('OPENROUTER_MODEL') or 'deepseek/deepseek-chat-v3.1:free'
+              model = os.environ.get('OPENROUTER_MODEL') or 'openrouter/free'
               response = client.chat.completions.create(
                   model=model,
                   messages=[
