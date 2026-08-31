@@ -600,6 +600,11 @@ jobs:
               client = openai.OpenAI(
                   base_url="https://openrouter.ai/api/v1",
                   api_key=os.environ['OPENROUTER_API_KEY'],
+                  # The openai SDK's own default (600s) could eat the job's whole
+                  # 10-minute timeout across a couple of failed providers before
+                  # ever falling back to noting the failure — bound it well below
+                  # that.
+                  timeout=45.0,
                   max_retries=1,
               )
               model = os.environ.get('OPENROUTER_MODEL') or 'cohere/north-mini-code:free'
@@ -610,7 +615,13 @@ jobs:
                       {"role": "user", "content": _flatten_content_blocks(content_blocks)},
                   ],
               )
-              return response.choices[0].message.content, model
+              content = response.choices[0].message.content
+              if not content:
+                  # Treat empty/None content (e.g. a model that only emitted a
+                  # tool call or reasoning trace) as a fallback failure rather
+                  # than crashing the whole review step on the .strip() call below.
+                  raise ValueError(f"OpenRouter returned empty content (model={model})")
+              return content, model
 
           PROVIDERS = [
               {
@@ -853,7 +864,10 @@ jobs:
                           section_label = f"{provider['label']} (fallback: OpenRouter {fallback_model})"
                           print(f"{provider['key']} fallback via OpenRouter ({fallback_model}) succeeded")
                       except Exception as fallback_err:
-                          print(f"OpenRouter fallback for {provider['key']} also failed: {fallback_err}")
+                          print(
+                              f"OpenRouter fallback for {provider['key']} also failed: "
+                              f"{type(fallback_err).__name__}: {fallback_err}"
+                          )
 
                   if review_text is None:
                       sections.append(f"#### {provider['label']}\n\nReview could not complete: {error_detail}")
