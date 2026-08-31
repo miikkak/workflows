@@ -121,6 +121,20 @@ jobs:
             let dockerfile = Buffer.from(dockerfileData.content, 'base64').toString('utf8');
             const timestamp = new Date().toISOString();
 
+            // In a multi-stage Dockerfile, only the LAST FROM line is the
+            // stage that actually gets built/tagged/shipped - inserting
+            // after the first FROM would patch a builder stage instead
+            // (e.g. `FROM golang:alpine AS builder` ... `FROM alpine:3.24`).
+            const fromMatches = [...dockerfile.matchAll(/^FROM .+$/gm)];
+            if (fromMatches.length === 0) {
+              throw new Error(`No FROM line found in ${dockerfilePath} - cannot insert rebuild markers`);
+            }
+            const lastFrom = fromMatches[fromMatches.length - 1];
+            const insertAfterLastFrom = (text) => {
+              const insertAt = lastFrom.index + lastFrom[0].length;
+              return dockerfile.slice(0, insertAt) + `\n${text}` + dockerfile.slice(insertAt);
+            };
+
             // apk add (without --upgrade) never touches an already-installed
             // package unless a new dependency forces it - most CVE fixes
             // land in packages baked into the base layer, not something the
@@ -132,20 +146,24 @@ jobs:
             const upgradeLine = 'RUN apk upgrade --no-cache';
             let addedUpgradeLine = false;
             if (!dockerfile.includes(upgradeLine)) {
-              dockerfile = dockerfile.replace(/^(FROM .+)$/m, `$1\n${upgradeLine}`);
+              dockerfile = insertAfterLastFrom(upgradeLine);
               addedUpgradeLine = true;
             }
 
             // A LABEL change before that RUN line busts Docker's build cache
             // on every dispatch, forcing a fresh apk index fetch even when
-            // the upgrade line itself is unchanged from a prior run.
+            // the upgrade line itself is unchanged from a prior run. Insert
+            // after the same last FROM line found above (dockerfile has
+            // been mutated since, so re-anchor on the current content).
             const labelLine = `LABEL security.rebuild-trigger="${timestamp}"`;
             const labelPattern = /^LABEL security\.rebuild-trigger=.*$/m;
 
             if (labelPattern.test(dockerfile)) {
               dockerfile = dockerfile.replace(labelPattern, labelLine);
             } else {
-              dockerfile = dockerfile.replace(/^(FROM .+)$/m, `$1\n${labelLine}`);
+              const lastFromNow = [...dockerfile.matchAll(/^FROM .+$/gm)].pop();
+              const insertAt = lastFromNow.index + lastFromNow[0].length;
+              dockerfile = dockerfile.slice(0, insertAt) + `\n${labelLine}` + dockerfile.slice(insertAt);
             }
 
             await github.rest.repos.createOrUpdateFileContents({

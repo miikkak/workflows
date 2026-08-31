@@ -473,9 +473,10 @@ jobs:
                 summary,
                 '```',
                 '',
-                `A rebuild alone (no Dockerfile change needed) picks up the ` +
-                  `fixed packages, since \`apk add --no-cache\` fetches from ` +
-                  `the live mirror at build time.`,
+                `\`apk add --no-cache\` alone won't pick these up - it never ` +
+                  `upgrades an already-installed package. The rebuild PR ` +
+                  `adds \`RUN apk upgrade --no-cache\` (if not already ` +
+                  `present) so the rebuild actually applies them.`,
               );
             } else {
               bodyLines.push(
