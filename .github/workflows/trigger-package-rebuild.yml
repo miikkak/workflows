@@ -1,0 +1,194 @@
+---
+name: Trigger Package Rebuild
+
+'on': # yamllint disable-line rule:truthy
+  workflow_dispatch:
+    inputs:
+      trigger:
+        description: >-
+          Opaque trigger value from the dependency-check workflow; unused
+          beyond confirming the dispatch fired.
+        required: false
+        type: string
+      check-name:
+        description: >-
+          Name of the dependency-checks.yml entry that triggered this run,
+          used to close the matching tracking issue on merge.
+        required: false
+        type: string
+  workflow_call:
+    inputs:
+      trigger:
+        description: >-
+          Opaque trigger value from the dependency-check workflow; unused
+          beyond confirming the dispatch fired.
+        required: false
+        type: string
+      check-name:
+        description: >-
+          Name of the dependency-checks.yml entry that triggered this run,
+          used to close the matching tracking issue on merge.
+        required: false
+        type: string
+
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+
+jobs:
+  trigger-package-rebuild:
+    name: Trigger Package Rebuild
+    runs-on: ubuntu-slim
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Create PR with rebuild-trigger marker
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9
+        env:
+          CHECK_NAME: ${{ inputs.check-name }}
+        with:
+          github-token: ${{ secrets.PULL_REQUEST_TOKEN }}
+          script: |
+            const checkName = process.env.CHECK_NAME || 'alpine-security-updates';
+            const branchName = 'auto-update/trigger-package-rebuild';
+
+            // Avoid piling up duplicate PRs on repeated dispatches
+            const prs = await github.rest.pulls.list({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              state: 'open',
+              head: `${context.repo.owner}:${branchName}`,
+            });
+
+            if (prs.data.length > 0) {
+              console.log(`PR already exists: #${prs.data[0].number}`);
+              return;
+            }
+
+            const { data: ref } = await github.rest.git.getRef({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              ref: 'heads/main',
+            });
+
+            try {
+              await github.rest.git.getRef({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                ref: `heads/${branchName}`,
+              });
+              await github.rest.git.deleteRef({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                ref: `heads/${branchName}`,
+              });
+              console.log(`✅ Deleted existing branch: ${branchName}`);
+            } catch (error) {
+              if (error.status !== 404) throw error;
+            }
+
+            await github.rest.git.createRef({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              ref: `refs/heads/${branchName}`,
+              sha: ref.object.sha,
+            });
+
+            const { data: dockerfileData } = await github.rest.repos.getContent({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              path: 'Dockerfile',
+              ref: branchName,
+            });
+
+            let dockerfile = Buffer.from(dockerfileData.content, 'base64').toString('utf8');
+            const timestamp = new Date().toISOString();
+            const labelLine = `LABEL security.rebuild-trigger="${timestamp}"`;
+            const labelPattern = /^LABEL security\.rebuild-trigger=.*$/m;
+
+            if (labelPattern.test(dockerfile)) {
+              dockerfile = dockerfile.replace(labelPattern, labelLine);
+            } else {
+              // Insert right after the first FROM line
+              dockerfile = dockerfile.replace(/^(FROM .+)$/m, `$1\n${labelLine}`);
+            }
+
+            await github.rest.repos.createOrUpdateFileContents({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              path: 'Dockerfile',
+              message: `chore: trigger rebuild for apk security updates\n\n${timestamp}`,
+              content: Buffer.from(dockerfile).toString('base64'),
+              sha: dockerfileData.sha,
+              branch: branchName,
+            });
+
+            console.log('✅ Added rebuild-trigger marker to Dockerfile');
+
+            const prBody = [
+              '## Trigger Rebuild for Alpine Security Updates',
+              '',
+              'Alpine apk packages have security updates available in the live ' +
+                'mirror, even though the pinned base image digest has not changed.',
+              '',
+              '`apk add --no-cache` fetches from the live mirror at build time, ' +
+                'so a rebuild alone (no other Dockerfile change) picks up the ' +
+                'fixed packages. This PR only adds a no-op `LABEL` marker so ' +
+                'there is a diff to build and publish from.',
+              '',
+              '### Testing',
+              '',
+              'The CI/CD pipeline will build, scan, and test the container as usual.',
+              '',
+              '---',
+              '*This PR was automatically created by the trigger-package-rebuild workflow.*',
+            ].join('\n');
+
+            const { data: pr } = await github.rest.pulls.create({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              title: 'chore: rebuild image to pick up Alpine security updates',
+              head: branchName,
+              base: 'main',
+              body: prBody,
+            });
+
+            console.log(`✅ Created PR #${pr.number}`);
+
+            await github.rest.issues.addLabels({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: pr.number,
+              labels: ['dependencies', 'docker', 'automated', 'release:patch'],
+            });
+
+            console.log('✅ Added labels to PR');
+
+            // Close the matching tracking issue, if open
+            const issueTitle = `⬆️ ${checkName}: update available`;
+            const issues = await github.rest.issues.listForRepo({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              labels: 'dependencies,automated',
+              state: 'open',
+            });
+
+            const existing = issues.data.find(i => i.title === issueTitle);
+            if (existing) {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: existing.number,
+                body: `Automated PR created: #${pr.number}\n\nClosing this issue as the rebuild is now in progress.`,
+              });
+              await github.rest.issues.update({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: existing.number,
+                state: 'closed',
+              });
+              console.log(`✅ Closed issue #${existing.number}`);
+            }

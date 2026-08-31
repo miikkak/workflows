@@ -300,6 +300,65 @@ jobs:
             echo "✅ Version is current"
           fi
 
+      # ── apk-security-updates handler ────────────────────────────────────────
+
+      - name: Check apk security updates
+        if: matrix.type == 'apk-security-updates'
+        id: apk-security-updates
+        env:
+          IMAGE: ${{ matrix.image }}
+          IMAGE_ARG: ${{ matrix.image-arg }}
+          IMAGE_PREFIX: ${{ matrix.image-prefix }}
+          FILE: ${{ matrix.file }}
+        run: |
+          # Resolve full image name (static or derived from a Dockerfile ARG) -
+          # same resolution as the docker-digest handler above.
+          if [[ -n "${IMAGE:-}" ]]; then
+            FULL_IMAGE="$IMAGE"
+          elif [[ -n "${IMAGE_ARG:-}" && -n "${IMAGE_PREFIX:-}" ]]; then
+            VERSION=$(grep -Fm1 "ARG ${IMAGE_ARG}=" "$FILE" | cut -d'=' -f2 | tr -d "\"'")
+            if [[ -z "$VERSION" ]]; then
+              echo "❌ Could not extract ARG ${IMAGE_ARG} from $FILE"
+              exit 1
+            fi
+            FULL_IMAGE="${IMAGE_PREFIX}:${VERSION}"
+          else
+            echo "❌ Either 'image' or both 'image-arg' and 'image-prefix' must be set"
+            exit 1
+          fi
+
+          # Test against the exact digest pinned in the file, if present, so
+          # the check reflects what's actually built today, not a moving tag.
+          DIGEST=$(grep -Fm1 "FROM ${FULL_IMAGE}" "$FILE" \
+            | grep -oE 'sha256:[0-9a-f]{64}' || echo "")
+          PINNED_IMAGE="$FULL_IMAGE"
+          if [[ -n "$DIGEST" ]]; then
+            PINNED_IMAGE="${FULL_IMAGE%%:*}@${DIGEST}"
+          fi
+          echo "📦 Checking apk packages for: $PINNED_IMAGE"
+
+          # apk add --no-cache in the Dockerfile fetches from the live mirror
+          # at build time regardless of the pinned base image digest, so a
+          # security fix can land in the apk index without the image tag
+          # ever changing. Compare against a container booted from the
+          # exact pinned digest to catch that case.
+          UPGRADES=$(docker run --rm "$PINNED_IMAGE" \
+            sh -c 'apk update >/dev/null 2>&1 && apk list -u 2>/dev/null' || echo "")
+
+          if [[ -n "$UPGRADES" ]]; then
+            echo "update-available=true" >> "$GITHUB_OUTPUT"
+            echo "⚠️ Package updates available:"
+            echo "$UPGRADES"
+            {
+              echo "summary<<APK_SUMMARY_EOF"
+              echo "$UPGRADES"
+              echo "APK_SUMMARY_EOF"
+            } >> "$GITHUB_OUTPUT"
+          else
+            echo "update-available=false" >> "$GITHUB_OUTPUT"
+            echo "✅ No apk package updates available"
+          fi
+
       # ── Collect unified result ─────────────────────────────────────────────
 
       - name: Collect check result
@@ -316,6 +375,8 @@ jobs:
           ORACLE_TAGS_UPDATE: ${{ steps.oracle-registry-tags.outputs.update-available }}
           ORACLE_TAGS_CURRENT: ${{ steps.oracle-registry-tags.outputs.current }}
           ORACLE_TAGS_LATEST: ${{ steps.oracle-registry-tags.outputs.latest }}
+          APK_UPDATE: ${{ steps.apk-security-updates.outputs.update-available }}
+          APK_SUMMARY: ${{ steps.apk-security-updates.outputs.summary }}
         run: |
           case "$CHECK_TYPE" in
             docker-digest)
@@ -336,6 +397,15 @@ jobs:
               echo "latest=${ORACLE_TAGS_LATEST}" >> "$GITHUB_OUTPUT"
               echo "dispatch-value=${ORACLE_TAGS_LATEST}" >> "$GITHUB_OUTPUT"
               ;;
+            apk-security-updates)
+              echo "update-available=${APK_UPDATE}" >> "$GITHUB_OUTPUT"
+              {
+                echo "summary<<APK_SUMMARY_EOF"
+                echo "${APK_SUMMARY}"
+                echo "APK_SUMMARY_EOF"
+              } >> "$GITHUB_OUTPUT"
+              echo "dispatch-value=true" >> "$GITHUB_OUTPUT"
+              ;;
           esac
 
       # ── Create or update issue ─────────────────────────────────────────────
@@ -348,6 +418,7 @@ jobs:
           CHECK_TYPE: ${{ matrix.type }}
           CURRENT: ${{ steps.result.outputs.current }}
           LATEST: ${{ steps.result.outputs.latest }}
+          SUMMARY: ${{ steps.result.outputs.summary }}
           DOCKER_IMAGE: ${{ steps.docker-digest.outputs.current-image }}
         with:
           script: |
@@ -355,6 +426,7 @@ jobs:
             const checkType = process.env.CHECK_TYPE;
             const current = process.env.CURRENT;
             const latest = process.env.LATEST;
+            const summary = process.env.SUMMARY;
             const dockerImage = process.env.DOCKER_IMAGE;
 
             const issueTitle = `⬆️ ${checkName}: update available`;
@@ -375,6 +447,20 @@ jobs:
                 `| Latest Digest  | \`${latest}\` |`,
                 '',
                 `Update the pinned digest in the \`FROM\` line of \`Dockerfile\`.`,
+              );
+            } else if (checkType === 'apk-security-updates') {
+              bodyLines.push(
+                `The base image's apk packages have updates available in the ` +
+                  `live mirror, even though the pinned base image digest hasn't ` +
+                  `changed:`,
+                '',
+                '```',
+                summary,
+                '```',
+                '',
+                `A rebuild alone (no Dockerfile change needed) picks up the ` +
+                  `fixed packages, since \`apk add --no-cache\` fetches from ` +
+                  `the live mirror at build time.`,
               );
             } else {
               bodyLines.push(
@@ -440,20 +526,32 @@ jobs:
           AUTO_UPDATE_WORKFLOW: ${{ matrix.auto-update-workflow }}
           AUTO_UPDATE_INPUT: ${{ matrix.auto-update-input }}
           CHECK_TYPE: ${{ matrix.type }}
+          CHECK_NAME: ${{ matrix.name }}
           DISPATCH_VALUE: ${{ steps.result.outputs.dispatch-value }}
         with:
           script: |
             const workflowId = process.env.AUTO_UPDATE_WORKFLOW;
             const checkType = process.env.CHECK_TYPE;
+            const checkName = process.env.CHECK_NAME;
             const dispatchValue = process.env.DISPATCH_VALUE;
 
             // Determine input key: explicit override, or type-based default
             let inputKey = process.env.AUTO_UPDATE_INPUT;
             if (!inputKey) {
-              inputKey = checkType === 'docker-digest' ? 'digest' : 'version';
+              inputKey = checkType === 'docker-digest' ? 'digest'
+                : checkType === 'apk-security-updates' ? 'trigger'
+                : 'version';
             }
 
-            console.log(`🤖 Dispatching ${workflowId} with ${inputKey}=${dispatchValue}`);
+            const inputs = { [inputKey]: dispatchValue };
+            // apk-security-updates has no meaningful version/digest to bump -
+            // pass the check name too so the target workflow can close the
+            // matching tracking issue by title.
+            if (checkType === 'apk-security-updates') {
+              inputs['check-name'] = checkName;
+            }
+
+            console.log(`🤖 Dispatching ${workflowId} with ${JSON.stringify(inputs)}`);
 
             try {
               await github.rest.actions.createWorkflowDispatch({
@@ -461,7 +559,7 @@ jobs:
                 repo: context.repo.repo,
                 workflow_id: workflowId,
                 ref: 'main',
-                inputs: { [inputKey]: dispatchValue },
+                inputs,
               });
               console.log('✅ Auto-update workflow dispatched successfully');
             } catch (error) {
