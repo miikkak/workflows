@@ -1,0 +1,255 @@
+---
+name: Trigger Package Rebuild
+
+'on': # yamllint disable-line rule:truthy
+  workflow_dispatch:
+    inputs:
+      trigger:
+        description: >-
+          Opaque trigger value from the dependency-check workflow; unused
+          beyond confirming the dispatch fired.
+        required: false
+        type: string
+      check-name:
+        description: >-
+          Name of the dependency-checks.yml entry that triggered this run,
+          used to close the matching tracking issue on merge.
+        required: false
+        type: string
+      dockerfile-path:
+        description: >-
+          Path to the Dockerfile to modify, matching the check's `file`
+          config. Defaults to `Dockerfile` at the repo root.
+        required: false
+        type: string
+  workflow_call:
+    inputs:
+      trigger:
+        description: >-
+          Opaque trigger value from the dependency-check workflow; unused
+          beyond confirming the dispatch fired.
+        required: false
+        type: string
+      check-name:
+        description: >-
+          Name of the dependency-checks.yml entry that triggered this run,
+          used to close the matching tracking issue on merge.
+        required: false
+        type: string
+      dockerfile-path:
+        description: >-
+          Path to the Dockerfile to modify, matching the check's `file`
+          config. Defaults to `Dockerfile` at the repo root.
+        required: false
+        type: string
+
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+
+jobs:
+  trigger-package-rebuild:
+    name: Trigger Package Rebuild
+    runs-on: ubuntu-slim
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Create PR with rebuild-trigger marker
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9
+        env:
+          CHECK_NAME: ${{ inputs.check-name }}
+          DOCKERFILE_PATH: ${{ inputs.dockerfile-path }}
+        with:
+          github-token: ${{ secrets.PULL_REQUEST_TOKEN }}
+          script: |
+            const checkName = process.env.CHECK_NAME || 'alpine-security-updates';
+            const dockerfilePath = process.env.DOCKERFILE_PATH || 'Dockerfile';
+            const branchName = 'auto-update/trigger-package-rebuild';
+
+            // Avoid piling up duplicate PRs on repeated dispatches
+            const prs = await github.rest.pulls.list({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              state: 'open',
+              head: `${context.repo.owner}:${branchName}`,
+            });
+
+            if (prs.data.length > 0) {
+              console.log(`PR already exists: #${prs.data[0].number}`);
+              return;
+            }
+
+            const { data: ref } = await github.rest.git.getRef({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              ref: 'heads/main',
+            });
+
+            try {
+              await github.rest.git.getRef({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                ref: `heads/${branchName}`,
+              });
+              await github.rest.git.deleteRef({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                ref: `heads/${branchName}`,
+              });
+              console.log(`✅ Deleted existing branch: ${branchName}`);
+            } catch (error) {
+              if (error.status !== 404) throw error;
+            }
+
+            await github.rest.git.createRef({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              ref: `refs/heads/${branchName}`,
+              sha: ref.object.sha,
+            });
+
+            const { data: dockerfileData } = await github.rest.repos.getContent({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              path: dockerfilePath,
+              ref: branchName,
+            });
+
+            let dockerfile = Buffer.from(dockerfileData.content, 'base64').toString('utf8');
+            const timestamp = new Date().toISOString();
+
+            // In a multi-stage Dockerfile, only the LAST FROM line is the
+            // stage that actually gets built/tagged/shipped - inserting
+            // after the first FROM would patch a builder stage instead
+            // (e.g. `FROM golang:alpine AS builder` ... `FROM alpine:3.24`).
+            const fromMatches = [...dockerfile.matchAll(/^FROM .+$/gm)];
+            if (fromMatches.length === 0) {
+              throw new Error(`No FROM line found in ${dockerfilePath} - cannot insert rebuild markers`);
+            }
+            const lastFrom = fromMatches[fromMatches.length - 1];
+            const insertAfterLastFrom = (text) => {
+              const insertAt = lastFrom.index + lastFrom[0].length;
+              return dockerfile.slice(0, insertAt) + `\n${text}` + dockerfile.slice(insertAt);
+            };
+
+            // apk add (without --upgrade) never touches an already-installed
+            // package unless a new dependency forces it - most CVE fixes
+            // land in packages baked into the base layer, not something the
+            // Dockerfile explicitly apk-adds. Verified empirically: a fresh
+            // `podman build --no-cache` of this Dockerfile left libssl3
+            // pinned at the old vulnerable version. So a marker-only PR
+            // would merge and republish a still-vulnerable image - actually
+            // upgrading installed packages needs `apk upgrade` in the image.
+            const upgradeLine = 'RUN apk upgrade --no-cache';
+            let addedUpgradeLine = false;
+            if (!dockerfile.includes(upgradeLine)) {
+              dockerfile = insertAfterLastFrom(upgradeLine);
+              addedUpgradeLine = true;
+            }
+
+            // A LABEL change before that RUN line busts Docker's build cache
+            // on every dispatch, forcing a fresh apk index fetch even when
+            // the upgrade line itself is unchanged from a prior run. Insert
+            // after the same last FROM line found above (dockerfile has
+            // been mutated since, so re-anchor on the current content).
+            const labelLine = `LABEL security.rebuild-trigger="${timestamp}"`;
+            const labelPattern = /^LABEL security\.rebuild-trigger=.*$/m;
+
+            if (labelPattern.test(dockerfile)) {
+              dockerfile = dockerfile.replace(labelPattern, labelLine);
+            } else {
+              const lastFromNow = [...dockerfile.matchAll(/^FROM .+$/gm)].pop();
+              const insertAt = lastFromNow.index + lastFromNow[0].length;
+              dockerfile = dockerfile.slice(0, insertAt) + `\n${labelLine}` + dockerfile.slice(insertAt);
+            }
+
+            await github.rest.repos.createOrUpdateFileContents({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              path: dockerfilePath,
+              message: `chore: trigger rebuild for apk security updates\n\n${timestamp}`,
+              content: Buffer.from(dockerfile).toString('base64'),
+              sha: dockerfileData.sha,
+              branch: branchName,
+            });
+
+            console.log('✅ Updated Dockerfile');
+
+            // Look up the matching tracking issue before building the PR
+            // body, so we can link it with a native "Closes #N" - that way
+            // GitHub closes it automatically only if this PR actually
+            // merges, not merely because it was opened.
+            const issueTitle = `⬆️ ${checkName}: update available`;
+            const openIssues = await github.rest.issues.listForRepo({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              labels: 'dependencies,automated',
+              state: 'open',
+            });
+            const trackingIssue = openIssues.data.find(i => i.title === issueTitle);
+
+            const prBody = [
+              '## Trigger Rebuild for Alpine Security Updates',
+              '',
+              'Alpine apk packages have security updates available in the live ' +
+                'mirror, even though the pinned base image digest has not changed.',
+              '',
+              '`apk add --no-cache` fetches from the live mirror at build time, ' +
+                'but never upgrades an already-installed package unless a new ' +
+                'dependency forces it - most fixes land in packages baked into ' +
+                'the base layer, not something explicitly `apk add`ed here. ' +
+                (addedUpgradeLine
+                  ? `This PR adds \`${upgradeLine}\` right after \`FROM\` so ` +
+                    'the rebuild actually applies pending updates, plus a ' +
+                    'no-op `LABEL` marker to bust the build cache on this ' +
+                    'and future dispatches.'
+                  : `\`${upgradeLine}\` is already present; this PR only ` +
+                    'updates the `LABEL` marker to bust the build cache so ' +
+                    'the next build re-fetches the apk index.'),
+              '',
+              ...(trackingIssue ? [`Closes #${trackingIssue.number}`, ''] : []),
+              '### Testing',
+              '',
+              'The CI/CD pipeline will build, scan, and test the container as usual.',
+              '',
+              '---',
+              '*This PR was automatically created by the trigger-package-rebuild workflow.*',
+            ].join('\n');
+
+            const { data: pr } = await github.rest.pulls.create({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              title: 'chore: rebuild image to pick up Alpine security updates',
+              head: branchName,
+              base: 'main',
+              body: prBody,
+            });
+
+            console.log(`✅ Created PR #${pr.number}`);
+
+            await github.rest.issues.addLabels({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: pr.number,
+              labels: ['dependencies', 'docker', 'automated', 'release:patch'],
+            });
+
+            console.log('✅ Added labels to PR');
+
+            // Leave the tracking issue open - the PR body's "Closes #N"
+            // (added above) makes GitHub close it automatically only if
+            // this PR actually merges. A failed check, an unmerged/closed
+            // PR, or a revert should not leave the vulnerable state
+            // untracked.
+            if (trackingIssue) {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: trackingIssue.number,
+                body: `Automated PR created: #${pr.number}\n\nThis issue will close automatically once that PR merges.`,
+              });
+              console.log(`✅ Linked issue #${trackingIssue.number}`);
+            }
