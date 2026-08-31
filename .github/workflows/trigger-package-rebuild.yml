@@ -2,26 +2,6 @@
 name: Trigger Package Rebuild
 
 'on': # yamllint disable-line rule:truthy
-  workflow_dispatch:
-    inputs:
-      trigger:
-        description: >-
-          Opaque trigger value from the dependency-check workflow; unused
-          beyond confirming the dispatch fired.
-        required: false
-        type: string
-      check-name:
-        description: >-
-          Name of the dependency-checks.yml entry that triggered this run,
-          used to close the matching tracking issue on merge.
-        required: false
-        type: string
-      dockerfile-path:
-        description: >-
-          Path to the Dockerfile to modify, matching the check's `file`
-          config. Defaults to `Dockerfile` at the repo root.
-        required: false
-        type: string
   workflow_call:
     inputs:
       trigger:
@@ -42,6 +22,13 @@ name: Trigger Package Rebuild
           config. Defaults to `Dockerfile` at the repo root.
         required: false
         type: string
+    secrets:
+      pull-request-token:
+        description: >-
+          PAT used to create the rebuild PR. Required (not just the default
+          GITHUB_TOKEN) because a PR opened with GITHUB_TOKEN cannot trigger
+          downstream CI workflows on itself.
+        required: true
 
 permissions:
   contents: write
@@ -63,7 +50,7 @@ jobs:
           CHECK_NAME: ${{ inputs.check-name }}
           DOCKERFILE_PATH: ${{ inputs.dockerfile-path }}
         with:
-          github-token: ${{ secrets.PULL_REQUEST_TOKEN }}
+          github-token: ${{ secrets.pull-request-token }}
           script: |
             const checkName = process.env.CHECK_NAME || 'alpine-security-updates';
             const dockerfilePath = process.env.DOCKERFILE_PATH || 'Dockerfile';
