@@ -77,6 +77,8 @@ jobs:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          OPENROUTER_MODEL: ${{ vars.OPENROUTER_MODEL }}
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
           REPO: ${{ github.repository }}
@@ -583,6 +585,45 @@ jobs:
               )
               return response.text
 
+          def call_openrouter(system_prompt, content_blocks):
+              # OpenRouter exposes an OpenAI-compatible API, so the existing openai
+              # SDK covers this too — no extra dependency needed. Used only as a
+              # last-resort fallback when a primary provider call fails (bad status
+              # code or connection error). Pinned to a specific free chat model
+              # rather than the "openrouter/free" router: per OpenRouter's own
+              # docs that router randomly selects among all ~24 free-tier models,
+              # filtered only by feature support (tool calling, vision, structured
+              # outputs) — not by suitability for text review. In testing it landed
+              # on a content-safety classifier that returned "User Safety: safe"
+              # instead of an actual review — silently useless output, not a
+              # catchable error.
+              client = openai.OpenAI(
+                  base_url="https://openrouter.ai/api/v1",
+                  api_key=os.environ['OPENROUTER_API_KEY'],
+                  # The openai SDK's own default (600s) could eat the job's whole
+                  # 10-minute timeout across a couple of failed providers before
+                  # ever falling back to noting the failure — bound it well below
+                  # that.
+                  timeout=45.0,
+                  max_retries=1,
+              )
+              model = os.environ.get('OPENROUTER_MODEL') or 'cohere/north-mini-code:free'
+              response = client.chat.completions.create(
+                  model=model,
+                  messages=[
+                      {"role": "system", "content": system_prompt},
+                      {"role": "user", "content": _flatten_content_blocks(content_blocks)},
+                  ],
+              )
+              content = response.choices[0].message.content
+              if not content or not content.strip():
+                  # Treat empty/whitespace-only/None content (e.g. a model that
+                  # only emitted a tool call or reasoning trace) as a fallback
+                  # failure rather than crashing the whole review step on the
+                  # .strip().splitlines()[-1] call below.
+                  raise ValueError(f"OpenRouter returned empty content (model={model})")
+              return content, model
+
           PROVIDERS = [
               {
                   "key": "anthropic",
@@ -793,13 +834,15 @@ jobs:
           sections = []
           verdicts = []
           for provider in providers:
+              section_label = provider['label']
               try:
                   review_text = review(provider, content_blocks, system_prompt)
               except provider['exceptions'] as e:
                   status_code = extract_status_code(e)
                   if status_code is not None:
                       print(
-                          f"{provider['key']} API error {status_code}: {e} — noting failure in review"
+                          f"{provider['key']} API error {status_code}: {e} — "
+                          f"attempting OpenRouter free-tier fallback"
                       )
                       error_detail = (
                           f"{provider['label']} API returned status {status_code}. "
@@ -807,14 +850,29 @@ jobs:
                       )
                   else:
                       print(
-                          f"{provider['key']} API connection error: {e} — noting failure in review"
+                          f"{provider['key']} API connection error: {e} — "
+                          f"attempting OpenRouter free-tier fallback"
                       )
                       error_detail = (
                           f"Could not reach the {provider['label']} API. "
                           f"This may indicate a temporary outage."
                       )
-                  sections.append(f"#### {provider['label']}\n\nReview could not complete: {error_detail}")
-                  continue
+
+                  review_text = None
+                  if os.environ.get('OPENROUTER_API_KEY'):
+                      try:
+                          review_text, fallback_model = call_openrouter(system_prompt, content_blocks)
+                          section_label = f"{provider['label']} (fallback: OpenRouter {fallback_model})"
+                          print(f"{provider['key']} fallback via OpenRouter ({fallback_model}) succeeded")
+                      except Exception as fallback_err:
+                          print(
+                              f"OpenRouter fallback for {provider['key']} also failed: "
+                              f"{type(fallback_err).__name__}: {fallback_err}"
+                          )
+
+                  if review_text is None:
+                      sections.append(f"#### {provider['label']}\n\nReview could not complete: {error_detail}")
+                      continue
 
               last_line = review_text.strip().splitlines()[-1].strip()
               if last_line not in ("VERDICT: PASS", "VERDICT: ISSUES"):
@@ -825,7 +883,7 @@ jobs:
                   verdicts.append("ISSUES")
               else:
                   verdicts.append(last_line.removeprefix("VERDICT: "))
-              sections.append(f"#### {provider['label']}\n\n{review_text}")
+              sections.append(f"#### {section_label}\n\n{review_text}")
 
           if not verdicts:
               # Carries the same diff-hash marker as a full review body (not just
