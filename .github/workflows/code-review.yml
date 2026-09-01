@@ -694,15 +694,21 @@ jobs:
               raise last_exc or RuntimeError("No OpenRouter models configured (OPENROUTER_MODELS empty after parsing)")
 
           def call_ollama_review(system_prompt, content_blocks):
-              # Absolute last resort, tried only when every cloud option (primary
-              # providers and the whole OpenRouter free-tier list) has failed, and
-              # only on a self-hosted runner (Ollama isn't installed on GitHub-hosted
-              # ones, and pulling a multi-GB model on demand there would be pointless).
-              # Unlike every other tier this one is neither rate-limited nor metered,
-              # so it can afford to actually wait for a real generation rather than
-              # failing fast — bounded by the job's own timeout, not an artificial one
-              # here, per the "no time pressure, just get a meaningful review" call.
-              host = os.environ.get('OLLAMA_HOST') or 'http://localhost:11434'
+              # Only available on a self-hosted runner (Ollama isn't installed on
+              # GitHub-hosted ones, and pulling a multi-GB model on demand there
+              # would be pointless) — see the 'ollama' tier's available() check.
+              # Unlike every other tier this one is neither rate-limited nor
+              # metered, so it can afford to actually wait for a real generation
+              # rather than failing fast — bounded by the job's own timeout, not
+              # an artificial one here, per the "no time pressure, just get a
+              # meaningful review" call.
+              #
+              # Explicit 127.0.0.1, not "localhost": Ollama's default install
+              # binds IPv4-only, but "localhost" can resolve to ::1 first on a
+              # dual-stack host, and the HTTP client doesn't reliably fall back
+              # to IPv4 within a normal connect timeout — observed live as an
+              # immediate APIConnectionError even with Ollama up and healthy.
+              host = os.environ.get('OLLAMA_HOST') or 'http://127.0.0.1:11434'
               client = openai.OpenAI(
                   base_url=f"{host}/v1",
                   api_key='ollama',  # unused by Ollama, SDK requires a non-empty value
