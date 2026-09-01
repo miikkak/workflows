@@ -66,12 +66,7 @@ jobs:
         (inputs.runner == null && github.event.pull_request.draft == false) ||
         (inputs.runner != null && inputs.enabled == true)
       )
-    # 20, not the previous 10: the last-resort local Ollama fallback is allowed
-    # up to ~10 minutes for a real generation (no rate limit or cost pressure on
-    # it, per design — see call_ollama_review), so the job budget needs enough
-    # headroom above that for setup, the primary-provider attempts, and the
-    # OpenRouter fallback chain that all run before it.
-    timeout-minutes: 20
+    timeout-minutes: 10
     env:
       ANTHROPIC_VERSION: "1.2.0"
       OPENAI_VERSION: "3.2.0"
@@ -129,9 +124,6 @@ jobs:
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           PR_ACTOR: ${{ github.event.pull_request.user.login }}
           PR_HEAD_REF: ${{ github.head_ref }}
-          RUNNER_ENVIRONMENT: ${{ runner.environment }}
-          OLLAMA_HOST: ${{ vars.OLLAMA_HOST }}
-          OLLAMA_REVIEW_MODEL: ${{ vars.OLLAMA_REVIEW_MODEL }}
         run: |
           python3 << 'PYEOF'
           import hashlib
@@ -664,10 +656,10 @@ jobs:
                   base_url="https://openrouter.ai/api/v1",
                   api_key=os.environ['OPENROUTER_API_KEY'],
                   # The openai SDK's own default (600s) could eat most of the job's
-                  # timeout budget on this tier alone, crowding out the local Ollama
-                  # tier that comes after it — bound it well below that. Each model
-                  # only gets one retry (plus its initial attempt) so the worst case
-                  # across the whole list still leaves room for what follows.
+                  # 10-minute timeout on this tier alone — bound it well below
+                  # that. Each model only gets one retry (plus its initial
+                  # attempt) so the worst case across the whole list still
+                  # leaves the job time to post a result either way.
                   timeout=45.0,
                   max_retries=1,
               )
@@ -693,71 +685,35 @@ jobs:
                       last_exc = e
               raise last_exc or RuntimeError("No OpenRouter models configured (OPENROUTER_MODELS empty after parsing)")
 
-          def call_ollama_review(system_prompt, content_blocks):
-              # Only available on a self-hosted runner (Ollama isn't installed on
-              # GitHub-hosted ones, and pulling a multi-GB model on demand there
-              # would be pointless) — see the 'ollama' tier's available() check.
-              # Unlike every other tier this one is neither rate-limited nor
-              # metered, so it can afford to actually wait for a real generation
-              # rather than failing fast — bounded by the job's own timeout, not
-              # an artificial one here, per the "no time pressure, just get a
-              # meaningful review" call.
-              #
-              # Explicit 127.0.0.1, not "localhost": Ollama's default install
-              # binds IPv4-only, but "localhost" can resolve to ::1 first on a
-              # dual-stack host, and the HTTP client doesn't reliably fall back
-              # to IPv4 within a normal connect timeout — observed live as an
-              # immediate APIConnectionError even with Ollama up and healthy.
-              host = os.environ.get('OLLAMA_HOST') or 'http://127.0.0.1:11434'
-              client = openai.OpenAI(
-                  base_url=f"{host}/v1",
-                  api_key='ollama',  # unused by Ollama, SDK requires a non-empty value
-                  timeout=600.0,
-                  max_retries=0,  # local is either up or not; retrying just burns the job timeout
-              )
-              # Must already be pulled on the runner (`ollama pull qwen2.5-coder:7b`)
-              # — this call doesn't pull it on demand, it just fails. Deliberately a
-              # A real stand-in review warrants the largest coding-capable model
-              # actually available locally — configure with OLLAMA_REVIEW_MODEL.
-              model = os.environ.get('OLLAMA_REVIEW_MODEL') or 'qwen2.5-coder:7b'
-              response = client.chat.completions.create(
-                  model=model,
-                  messages=[
-                      {"role": "system", "content": system_prompt},
-                      {"role": "user", "content": _flatten_content_blocks(content_blocks)},
-                  ],
-              )
-              content = response.choices[0].message.content
-              if not content or not content.strip():
-                  raise ValueError(f"Ollama returned empty content (model={model})")
-              return content, f"local Ollama {model}"
-
           # A single ordered chain tried until one tier succeeds — not a
           # run-every-configured-provider consensus review. Each repo gets every
           # provider key configured (org-wide), and the default order below
           # reflects cost/scarcity: paid primaries first, Gemini's free-tier quota
           # is scarce enough to treat as an emergency-only spare rather than an
-          # equal peer, OpenRouter's free pool next, local Ollama (no rate limit
-          # or cost, but slowest and lowest quality) absolute last. Override
-          # per-repo with the REVIEW_TIERS variable — a comma-separated list of
-          # these keys in the order to try (valid keys: anthropic, openai,
-          # gemini, openrouter, ollama — e.g. "anthropic,gemini,ollama" to
-          # skip openai/openrouter entirely). A tier is only actually
-          # attempted if it's also available() — has its API key configured,
-          # or for ollama, is running on a self-hosted runner.
-          DEFAULT_TIER_ORDER = ['anthropic', 'openai', 'gemini', 'openrouter', 'ollama']
+          # equal peer, OpenRouter's free pool last. Local Ollama was tried as a
+          # further last resort and dropped: tested live against this repo's own
+          # diffs on the fastest available box (qwen2.5-coder:7b and 14b, ~5-8 min
+          # per attempt), it never once produced an actual review in the required
+          # MUST FIX/CONSIDER/VERDICT format — 7B fabricated code that doesn't
+          # exist in the diff, 14B just summarized the change instead of
+          # reviewing it. A tier that can't do the job is worse than no tier: it
+          # burns most of the job's timeout to arrive at the same "no real review
+          # happened" outcome the neutral-comment path already reports instantly.
+          # Override per-repo with the REVIEW_TIERS variable — a comma-separated
+          # list of these keys in the order to try (valid keys: anthropic,
+          # openai, gemini, openrouter — e.g. "anthropic,gemini" to skip
+          # openai/openrouter entirely). A tier is only actually attempted if
+          # it's also available() — has its API key configured.
+          DEFAULT_TIER_ORDER = ['anthropic', 'openai', 'gemini', 'openrouter']
 
           def _openrouter_tier(sp, cb):
               content, model = call_openrouter(sp, cb)
               return content, f"OpenRouter ({model})"
 
-          def _ollama_tier(sp, cb):
-              return call_ollama_review(sp, cb)
-
           # "trusted" gates auto-approval: a real provider's clean PASS is trusted
-          # to approve the PR outright; OpenRouter's free tier and local Ollama
-          # are both meaningfully weaker reviewers, so a PASS from either is shown
-          # but never auto-approves — see the event-decision logic below.
+          # to approve the PR outright; OpenRouter's free tier is a meaningfully
+          # weaker reviewer, so a PASS from it is shown but never auto-approves —
+          # see the event-decision logic below.
           TIERS = {
               'anthropic': {
                   'label': 'Claude (claude-sonnet-5)',
@@ -793,13 +749,6 @@ jobs:
                   # call_openrouter already narrows its own internal per-model
                   # failures to a single re-raised exception (or a clear
                   # RuntimeError) — nothing more specific to catch here.
-                  'exceptions': (Exception,),
-                  'trusted': False,
-              },
-              'ollama': {
-                  'label': 'Local Ollama',
-                  'available': lambda: os.environ.get('RUNNER_ENVIRONMENT') == 'self-hosted',
-                  'call': _ollama_tier,
                   'exceptions': (Exception,),
                   'trusted': False,
               },
@@ -859,8 +808,8 @@ jobs:
           if not tier_candidates:
               print(
                   "No review tier is available (checked: ANTHROPIC_API_KEY, "
-                  "OPENAI_API_KEY, GEMINI_API_KEY, OPENROUTER_API_KEY, and "
-                  "self-hosted Ollama), skipping review"
+                  "OPENAI_API_KEY, GEMINI_API_KEY, OPENROUTER_API_KEY), "
+                  "skipping review"
               )
               sys.exit(0)
           print(f"Tier order: {[k for k, _ in tier_candidates]}")
