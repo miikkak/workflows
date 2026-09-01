@@ -115,7 +115,7 @@ jobs:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
-          OPENROUTER_MODEL: ${{ vars.OPENROUTER_MODEL }}
+          OPENROUTER_MODELS: ${{ vars.OPENROUTER_MODELS }}
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
           REPO: ${{ github.repository }}
@@ -622,50 +622,68 @@ jobs:
               )
               return response.text
 
+          # Tried in order until one produces usable output. Never the
+          # "openrouter/free" router itself: per OpenRouter's own docs that router
+          # randomly selects among all ~24 free-tier models, filtered only by
+          # feature support (tool calling, vision, structured outputs) — not by
+          # suitability for text review. In testing it landed on a content-safety
+          # classifier that returned "User Safety: safe" instead of an actual
+          # review — silently useless output, not a catchable error. These three
+          # are picked instead for actual code/reasoning capability: GLM 5.2 is
+          # explicitly positioned for project-level software engineering review;
+          # MiniMax M3 and Nemotron 3 Ultra are large general-purpose/agentic
+          # models kept as fallbacks in case GLM's shared free pool is congested
+          # (observed: upstream_429 on OpenRouter's shared pool for GLM alone).
+          DEFAULT_OPENROUTER_MODELS = [
+              'z-ai/glm-5.2:free',
+              'minimax/minimax-m3:free',
+              'nvidia/nemotron-3-ultra-550b-a55b:free',
+          ]
+
           def call_openrouter(system_prompt, content_blocks):
-              # OpenRouter exposes an OpenAI-compatible API, so the existing openai
-              # SDK covers this too — no extra dependency needed. Used only as a
-              # last-resort fallback when a primary provider call fails (bad status
-              # code or connection error). Pinned to a specific free chat model
-              # rather than the "openrouter/free" router: per OpenRouter's own
-              # docs that router randomly selects among all ~24 free-tier models,
-              # filtered only by feature support (tool calling, vision, structured
-              # outputs) — not by suitability for text review. In testing it landed
-              # on a content-safety classifier that returned "User Safety: safe"
-              # instead of an actual review — silently useless output, not a
-              # catchable error.
+              # Used only as a last-resort fallback when a primary provider call
+              # fails (bad status code or connection error). OpenRouter exposes an
+              # OpenAI-compatible API, so the existing openai SDK covers this too —
+              # no extra dependency needed.
+              models_env = os.environ.get('OPENROUTER_MODELS') or os.environ.get('OPENROUTER_MODEL')
+              models = (
+                  [m.strip() for m in models_env.split(',') if m.strip()]
+                  if models_env else DEFAULT_OPENROUTER_MODELS
+              )
               client = openai.OpenAI(
                   base_url="https://openrouter.ai/api/v1",
                   api_key=os.environ['OPENROUTER_API_KEY'],
                   # The openai SDK's own default (600s) could eat the job's whole
                   # 10-minute timeout across a couple of failed providers before
                   # ever falling back to noting the failure — bound it well below
-                  # that.
+                  # that. With multiple candidate models now tried in sequence,
+                  # each one only gets one retry (plus its initial attempt) so the
+                  # worst case across the whole list still fits comfortably inside
+                  # the job timeout.
                   timeout=45.0,
-                  # This is the last line of defense before the review job gives up
-                  # entirely, and OpenRouter's free-tier 429s carry an explicit
-                  # retry_after_seconds (observed: 5) signaling a transient,
-                  # shared-pool throttle rather than real unavailability — worth a
-                  # few extra attempts (the SDK backs off and honors Retry-After
-                  # automatically) rather than surrendering after one retry.
-                  max_retries=3,
+                  max_retries=1,
               )
-              model = os.environ.get('OPENROUTER_MODEL') or 'z-ai/glm-5.2:free'
-              response = client.chat.completions.create(
-                  model=model,
-                  messages=[
-                      {"role": "system", "content": system_prompt},
-                      {"role": "user", "content": _flatten_content_blocks(content_blocks)},
-                  ],
-              )
-              content = response.choices[0].message.content
-              if not content or not content.strip():
-                  # Treat empty/whitespace-only/None content (e.g. a model that
-                  # only emitted a tool call or reasoning trace) as a fallback
-                  # failure rather than crashing the whole review step on the
-                  # .strip().splitlines()[-1] call below.
-                  raise ValueError(f"OpenRouter returned empty content (model={model})")
-              return content, model
+              last_exc = None
+              for model in models:
+                  try:
+                      response = client.chat.completions.create(
+                          model=model,
+                          messages=[
+                              {"role": "system", "content": system_prompt},
+                              {"role": "user", "content": _flatten_content_blocks(content_blocks)},
+                          ],
+                      )
+                      content = response.choices[0].message.content
+                      if not content or not content.strip():
+                          # Treat empty/whitespace-only/None content (e.g. a model
+                          # that only emitted a tool call or reasoning trace) as a
+                          # failure of this model, not a crash — try the next one.
+                          raise ValueError(f"OpenRouter returned empty content (model={model})")
+                      return content, model
+                  except Exception as e:
+                      print(f"OpenRouter model {model!r} failed: {type(e).__name__}: {e}")
+                      last_exc = e
+              raise last_exc
 
           PROVIDERS = [
               {
