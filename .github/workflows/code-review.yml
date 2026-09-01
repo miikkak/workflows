@@ -114,6 +114,7 @@ jobs:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          NVIDIA_API_KEY: ${{ secrets.NVIDIA_API_KEY }}
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
           OPENROUTER_MODELS: ${{ vars.OPENROUTER_MODELS }}
           REVIEW_TIERS: ${{ vars.REVIEW_TIERS }}
@@ -622,6 +623,31 @@ jobs:
               )
               return response.text
 
+          def call_nvidia(system_prompt, content_blocks):
+              # NVIDIA NIM's free tier (10,000 RPD / 40 RPM per the NVIDIA Developer
+              # Program) is generous enough to sit ahead of OpenRouter's free pool —
+              # tested live against this repo's own diffs: openai/gpt-oss-120b
+              # answered in 20-30s and, on a ~1,200-line real diff, caught 2 of 3
+              # MUST FIX items correctly (the third was a real over-generalization,
+              # not a fabrication). nvidia/nemotron-3-ultra-550b-a55b, tried during
+              # the same testing, hit a 503 then a timeout — the flagship model
+              # looks commonly oversubscribed on the free tier, so gpt-oss-120b is
+              # the one actually wired in here, not NVIDIA's own largest model.
+              client = openai.OpenAI(
+                  base_url="https://integrate.api.nvidia.com/v1",
+                  api_key=os.environ['NVIDIA_API_KEY'],
+                  timeout=90.0,
+                  max_retries=1,
+              )
+              response = client.chat.completions.create(
+                  model="openai/gpt-oss-120b",
+                  messages=[
+                      {"role": "system", "content": system_prompt},
+                      {"role": "user", "content": _flatten_content_blocks(content_blocks)},
+                  ],
+              )
+              return response.choices[0].message.content
+
           # Tried in order until one produces usable output. Never the
           # "openrouter/free" router itself: per OpenRouter's own docs that router
           # randomly selects among all ~24 free-tier models, filtered only by
@@ -690,9 +716,17 @@ jobs:
           # provider key configured (org-wide), and the default order below
           # reflects cost/scarcity: paid primaries first, Gemini's free-tier quota
           # is scarce enough to treat as an emergency-only spare rather than an
-          # equal peer, OpenRouter's free pool last. Local Ollama was tried as a
-          # further last resort and dropped: tested live against this repo's own
-          # diffs on the fastest available box (qwen2.5-coder:7b and 14b, ~5-8 min
+          # equal peer, then NVIDIA NIM and OpenRouter's free pool as two
+          # independent free-tier safety nets. NVIDIA goes first: tested live
+          # against this repo's own diffs, openai/gpt-oss-120b answered in
+          # 20-30s and, on a real ~1,200-line diff, caught 2 of 3 MUST FIX items
+          # correctly (see call_nvidia). OpenRouter stays as a second free-tier
+          # fallback rather than being dropped for it — already proven reliable
+          # in this repo's own review history (its default model list falls
+          # through to a working one when the first is congested) — so a bad day
+          # on NVIDIA's specific model doesn't take out the whole free tier.
+          # Local Ollama was tried as a further last resort and dropped: tested
+          # live on the fastest available box (qwen2.5-coder:7b and 14b, ~5-8 min
           # per attempt), it never once produced an actual review in the required
           # MUST FIX/CONSIDER/VERDICT format — 7B fabricated code that doesn't
           # exist in the diff, 14B just summarized the change instead of
@@ -701,19 +735,21 @@ jobs:
           # happened" outcome the neutral-comment path already reports instantly.
           # Override per-repo with the REVIEW_TIERS variable — a comma-separated
           # list of these keys in the order to try (valid keys: anthropic,
-          # openai, gemini, openrouter — e.g. "anthropic,gemini" to skip
-          # openai/openrouter entirely). A tier is only actually attempted if
-          # it's also available() — has its API key configured.
-          DEFAULT_TIER_ORDER = ['anthropic', 'openai', 'gemini', 'openrouter']
+          # openai, gemini, nvidia, openrouter — e.g. "anthropic,gemini" to skip
+          # the rest entirely). A tier is only actually attempted if it's also
+          # available() — has its API key configured.
+          DEFAULT_TIER_ORDER = ['anthropic', 'openai', 'gemini', 'nvidia', 'openrouter']
 
           def _openrouter_tier(sp, cb):
               content, model = call_openrouter(sp, cb)
               return content, f"OpenRouter ({model})"
 
           # "trusted" gates auto-approval: a real provider's clean PASS is trusted
-          # to approve the PR outright; OpenRouter's free tier is a meaningfully
-          # weaker reviewer, so a PASS from it is shown but never auto-approves —
-          # see the event-decision logic below.
+          # to approve the PR outright; NVIDIA NIM and OpenRouter are both free
+          # tiers of open-weight models — meaningfully weaker and, per live
+          # testing, capable of confidently wrong findings — so a PASS from
+          # either is shown but never auto-approves; see the event-decision
+          # logic below.
           TIERS = {
               'anthropic': {
                   'label': 'Claude (claude-sonnet-5)',
@@ -741,6 +777,13 @@ jobs:
                   # gets to try the next one.
                   'exceptions': (genai.errors.APIError, httpx.TransportError),
                   'trusted': True,
+              },
+              'nvidia': {
+                  'label': 'NVIDIA NIM (gpt-oss-120b)',
+                  'available': lambda: bool(os.environ.get('NVIDIA_API_KEY')),
+                  'call': lambda sp, cb: (call_nvidia(sp, cb), 'NVIDIA NIM (gpt-oss-120b)'),
+                  'exceptions': (openai.APIStatusError, openai.APIConnectionError),
+                  'trusted': False,
               },
               'openrouter': {
                   'label': 'OpenRouter free tier',
@@ -808,8 +851,8 @@ jobs:
           if not tier_candidates:
               print(
                   "No review tier is available (checked: ANTHROPIC_API_KEY, "
-                  "OPENAI_API_KEY, GEMINI_API_KEY, OPENROUTER_API_KEY), "
-                  "skipping review"
+                  "OPENAI_API_KEY, GEMINI_API_KEY, NVIDIA_API_KEY, "
+                  "OPENROUTER_API_KEY), skipping review"
               )
               sys.exit(0)
           print(f"Tier order: {[k for k, _ in tier_candidates]}")
