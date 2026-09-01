@@ -689,7 +689,7 @@ jobs:
                   except Exception as e:
                       print(f"OpenRouter model {model!r} failed: {type(e).__name__}: {e}")
                       last_exc = e
-              raise last_exc
+              raise last_exc or RuntimeError("No OpenRouter models configured (OPENROUTER_MODELS empty after parsing)")
 
           PROVIDERS = [
               {
