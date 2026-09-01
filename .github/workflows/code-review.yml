@@ -621,14 +621,29 @@ jobs:
               return response.choices[0].message.content
 
           def call_gemini(system_prompt, content_blocks):
-              # Same reasoning as call_anthropic's explicit timeout above;
-              # HttpOptions.timeout is in milliseconds, not seconds.
+              # gemini-3.1-pro-preview (the prior pin) returned a persistent
+              # RESOURCE_EXHAUSTED (limit: 0) on this account regardless of
+              # payload size — that Pro-tier model isn't free-tier-eligible at
+              # all here, not a quota exhaustion. gemini-2.5-pro/2.5-flash are
+              # both fully retired for this account (404). gemini-3.6-flash
+              # works on small diffs but hit three consecutive 503s
+              # ("high demand") on a real ~1,200-line diff. gemini-3.5-flash is
+              # the one that actually worked: on that same big diff it caught a
+              # real, session-novel bug (an awk pattern in dependency-check.yml
+              # that silently mismatches a `FROM --platform=... image` line)
+              # that neither NVIDIA NIM nor CodeRabbit found, plus the same
+              # missing-`set -Eeuo pipefail` findings NVIDIA caught — without
+              # NVIDIA's one false-positive third claim. All tested live against
+              # this repo's own diffs.
+              #
+              # Same timeout reasoning as call_anthropic above; HttpOptions.timeout
+              # is in milliseconds, not seconds.
               client = genai.Client(
                   api_key=os.environ['GEMINI_API_KEY'],
                   http_options=genai_types.HttpOptions(timeout=60_000),
               )
               response = client.models.generate_content(
-                  model="gemini-3.1-pro-preview",
+                  model="gemini-3.5-flash",
                   contents=_flatten_content_blocks(content_blocks),
                   config=genai_types.GenerateContentConfig(system_instruction=system_prompt),
               )
@@ -777,9 +792,9 @@ jobs:
                   'trusted': True,
               },
               'gemini': {
-                  'label': 'Gemini (gemini-3.1-pro-preview)',
+                  'label': 'Gemini (gemini-3.5-flash)',
                   'available': lambda: bool(os.environ.get('GEMINI_API_KEY')),
-                  'call': lambda sp, cb: (call_gemini(sp, cb), 'Gemini (gemini-3.1-pro-preview)'),
+                  'call': lambda sp, cb: (call_gemini(sp, cb), 'Gemini (gemini-3.5-flash)'),
                   # genai.errors.APIError only covers errors the SDK parses from a
                   # response body (HTTP status errors); a genuine network failure
                   # (DNS, refused connection, timeout) surfaces as a raw httpx
