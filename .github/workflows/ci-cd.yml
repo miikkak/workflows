@@ -69,9 +69,46 @@ permissions:
 # ==============================================================================
 
 jobs:
+  detect-runner:
+    name: Detect Runner
+    runs-on: ubuntu-slim
+    timeout-minutes: 2
+    outputs:
+      runner: ${{ steps.pick.outputs.runner }}
+      test-runner: ${{ steps.pick.outputs.test-runner }}
+    steps:
+      - name: Pick runner
+        id: pick
+        env:
+          REPO_PRIVATE: ${{ github.event.repository.private }}
+          EVENT_NAME: ${{ github.event_name }}
+          HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
+          BASE_REPO: ${{ github.repository }}
+          DEFAULT_RUNNER: ${{ inputs.runner }}
+          DEFAULT_TEST_RUNNER: ${{ inputs.test-runner }}
+        run: |
+          set -Eeuo pipefail
+          # See pr-check.yml's detect-runner for the full rationale: untrusted
+          # only when the base repo is genuinely public AND the PR comes from
+          # an actual fork, never for private repos or non-pull_request
+          # events.
+          untrusted_fork=false
+          if [[ "${REPO_PRIVATE}" == "false" && "${EVENT_NAME}" == "pull_request" \
+                && "${HEAD_REPO}" != "${BASE_REPO}" ]]; then
+            untrusted_fork=true
+          fi
+          if [[ "${untrusted_fork}" == "true" ]]; then
+            echo 'runner=["ubuntu-slim"]' >> "$GITHUB_OUTPUT"
+            echo 'test-runner=["ubuntu-slim"]' >> "$GITHUB_OUTPUT"
+          else
+            echo "runner=${DEFAULT_RUNNER}" >> "$GITHUB_OUTPUT"
+            echo "test-runner=${DEFAULT_TEST_RUNNER}" >> "$GITHUB_OUTPUT"
+          fi
+
   detect-changes:
     name: Detect Changed Files
-    runs-on: ${{ fromJson(inputs.runner) }}
+    needs: detect-runner
+    runs-on: ${{ fromJson(needs.detect-runner.outputs.runner) }}
     timeout-minutes: 5
     outputs:
       code: ${{ steps.filter.outputs.code }}
@@ -150,10 +187,10 @@ jobs:
 
   check-trigger:
     name: Check PR Trigger
-    runs-on: ${{ fromJson(inputs.runner) }}
+    runs-on: ${{ fromJson(needs.detect-runner.outputs.runner) }}
     timeout-minutes: 5
-    needs: detect-changes
-    if: needs.detect-changes.result == 'success'
+    needs: [detect-runner, detect-changes]
+    if: needs.detect-runner.result == 'success' && needs.detect-changes.result == 'success'
     outputs:
       should_run: ${{ steps.check.outputs.should_run }}
       skip_code_checks: ${{ steps.check.outputs.skip_code_checks }}
@@ -174,10 +211,13 @@ jobs:
 
   test:
     name: Run Test Suite
-    runs-on: ${{ fromJson(inputs.test-runner) }}
+    runs-on: ${{ fromJson(needs.detect-runner.outputs.test-runner) }}
     timeout-minutes: ${{ inputs.test-timeout-minutes }}
-    needs: check-trigger
-    if: needs.check-trigger.outputs.should_run == 'true' && needs.check-trigger.outputs.skip_code_checks == 'false'
+    needs: [detect-runner, check-trigger]
+    if: |
+      needs.detect-runner.result == 'success' &&
+      needs.check-trigger.outputs.should_run == 'true' &&
+      needs.check-trigger.outputs.skip_code_checks == 'false'
 
     steps:
       - name: Checkout code
@@ -212,10 +252,11 @@ jobs:
 
   verify-release-notes:
     name: Verify Release Notes Generation
-    runs-on: ${{ fromJson(inputs.runner) }}
+    runs-on: ${{ fromJson(needs.detect-runner.outputs.runner) }}
     timeout-minutes: 5
-    needs: [detect-changes, check-trigger]
+    needs: [detect-runner, detect-changes, check-trigger]
     if: |
+      needs.detect-runner.result == 'success' &&
       needs.check-trigger.outputs.should_run == 'true' &&
       needs.detect-changes.outputs.release-config == 'true' &&
       needs.detect-changes.outputs.has-local-release-tooling == 'true'
