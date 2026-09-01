@@ -634,6 +634,8 @@ jobs:
           # MiniMax M3 and Nemotron 3 Ultra are large general-purpose/agentic
           # models kept as fallbacks in case GLM's shared free pool is congested
           # (observed: upstream_429 on OpenRouter's shared pool for GLM alone).
+          # Override with the OPENROUTER_MODELS repo/org variable: a comma-separated
+          # list tried in the given order (e.g. "vendor/model-a:free,vendor/model-b:free").
           DEFAULT_OPENROUTER_MODELS = [
               'z-ai/glm-5.2:free',
               'minimax/minimax-m3:free',
