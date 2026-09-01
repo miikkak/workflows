@@ -43,8 +43,8 @@ jobs:
           # only when the PR comes from an actual fork, never for a branch
           # pushed directly into this repo or a non-pull_request event.
           # Secrets are already stripped by GitHub for fork-triggered
-          # pull_request runs regardless (configured_providers() below finds
-          # none and exits cleanly) — this guards the separate risk of PR-
+          # pull_request runs regardless (no review tier ends up available below
+          # and the job exits cleanly) — this guards the separate risk of PR-
           # controlled code executing on self-hosted infrastructure at all.
           untrusted_fork=false
           if [[ "${EVENT_NAME}" == "pull_request" && "${HEAD_REPO}" != "${BASE_REPO}" ]]; then
@@ -114,8 +114,10 @@ jobs:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          NVIDIA_API_KEY: ${{ secrets.NVIDIA_API_KEY }}
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
-          OPENROUTER_MODEL: ${{ vars.OPENROUTER_MODEL }}
+          OPENROUTER_MODELS: ${{ vars.OPENROUTER_MODELS }}
+          REVIEW_TIERS: ${{ vars.REVIEW_TIERS }}
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
           REPO: ${{ github.repository }}
@@ -123,9 +125,6 @@ jobs:
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           PR_ACTOR: ${{ github.event.pull_request.user.login }}
           PR_HEAD_REF: ${{ github.head_ref }}
-          RUNNER_ENVIRONMENT: ${{ runner.environment }}
-          OLLAMA_HOST: ${{ vars.OLLAMA_HOST }}
-          OLLAMA_MODEL: ${{ vars.OLLAMA_MODEL }}
         run: |
           python3 << 'PYEOF'
           import hashlib
@@ -143,6 +142,7 @@ jobs:
           import anthropic
           import openai
           from google import genai
+          from google.genai import errors as genai_errors
           from google.genai import types as genai_types
 
           DIFF_MAX_CHARS = 60_000
@@ -390,9 +390,11 @@ jobs:
               return '\n\n---\n\n'.join(parts)
 
           def extract_consider_items(body):
-              # A combined multi-provider body has one "### CONSIDER" section per
-              # provider (under separate "#### <model>" headings) — accumulate all
-              # of them rather than stopping after the first.
+              # Each review body has one section (single review tier per round),
+              # but this still accumulates across multiple "### CONSIDER" headings
+              # rather than stopping after the first — harmless, and keeps this
+              # correct against any older multi-section review body still in a
+              # PR's history from before reviews moved to a single tiered attempt.
               lines = body.split('\n')
               consider_lines = []
               in_consider = False
@@ -577,7 +579,11 @@ jobs:
               return content_blocks
 
           def call_anthropic(system_prompt, content_blocks):
-              client = anthropic.Anthropic(max_retries=3)
+              # Explicit timeout, not the SDK's 600s default: a stalled (not
+              # erroring) first-tier request could otherwise sit for most of
+              # the job's own 10-minute timeout before the fallback chain ever
+              # gets a turn, or before anything gets posted at all.
+              client = anthropic.Anthropic(timeout=60.0, max_retries=1)
               message = client.messages.create(
                   model="claude-sonnet-5",
                   max_tokens=4096,
@@ -603,7 +609,8 @@ jobs:
               return '\n\n'.join(b['text'] for b in content_blocks)
 
           def call_openai(system_prompt, content_blocks):
-              client = openai.OpenAI(max_retries=3)
+              # Same reasoning as call_anthropic's explicit timeout above.
+              client = openai.OpenAI(timeout=60.0, max_retries=1)
               response = client.chat.completions.create(
                   model="gpt-5",
                   messages=[
@@ -614,120 +621,192 @@ jobs:
               return response.choices[0].message.content
 
           def call_gemini(system_prompt, content_blocks):
-              client = genai.Client(api_key=os.environ['GEMINI_API_KEY'])
+              # Same reasoning as call_anthropic's explicit timeout above;
+              # HttpOptions.timeout is in milliseconds, not seconds.
+              client = genai.Client(
+                  api_key=os.environ['GEMINI_API_KEY'],
+                  http_options=genai_types.HttpOptions(timeout=60_000),
+              )
               response = client.models.generate_content(
-                  model="gemini-2.5-pro",
+                  model="gemini-3.1-pro-preview",
                   contents=_flatten_content_blocks(content_blocks),
                   config=genai_types.GenerateContentConfig(system_instruction=system_prompt),
               )
               return response.text
 
-          def call_openrouter(system_prompt, content_blocks):
-              # OpenRouter exposes an OpenAI-compatible API, so the existing openai
-              # SDK covers this too — no extra dependency needed. Used only as a
-              # last-resort fallback when a primary provider call fails (bad status
-              # code or connection error). Pinned to a specific free chat model
-              # rather than the "openrouter/free" router: per OpenRouter's own
-              # docs that router randomly selects among all ~24 free-tier models,
-              # filtered only by feature support (tool calling, vision, structured
-              # outputs) — not by suitability for text review. In testing it landed
-              # on a content-safety classifier that returned "User Safety: safe"
-              # instead of an actual review — silently useless output, not a
-              # catchable error.
+          def call_nvidia(system_prompt, content_blocks):
+              # NVIDIA NIM's free tier (10,000 RPD / 40 RPM per the NVIDIA Developer
+              # Program) is generous enough to sit ahead of OpenRouter's free pool —
+              # tested live against this repo's own diffs: openai/gpt-oss-120b
+              # answered in 20-30s and, on a ~1,200-line real diff, caught 2 of 3
+              # MUST FIX items correctly (the third was a real over-generalization,
+              # not a fabrication). nvidia/nemotron-3-ultra-550b-a55b, tried during
+              # the same testing, hit a 503 then a timeout — the flagship model
+              # looks commonly oversubscribed on the free tier, so gpt-oss-120b is
+              # the one actually wired in here, not NVIDIA's own largest model.
               client = openai.OpenAI(
-                  base_url="https://openrouter.ai/api/v1",
-                  api_key=os.environ['OPENROUTER_API_KEY'],
-                  # The openai SDK's own default (600s) could eat the job's whole
-                  # 10-minute timeout across a couple of failed providers before
-                  # ever falling back to noting the failure — bound it well below
-                  # that.
-                  timeout=45.0,
+                  base_url="https://integrate.api.nvidia.com/v1",
+                  api_key=os.environ['NVIDIA_API_KEY'],
+                  timeout=90.0,
                   max_retries=1,
               )
-              model = os.environ.get('OPENROUTER_MODEL') or 'cohere/north-mini-code:free'
               response = client.chat.completions.create(
-                  model=model,
+                  model="openai/gpt-oss-120b",
                   messages=[
                       {"role": "system", "content": system_prompt},
                       {"role": "user", "content": _flatten_content_blocks(content_blocks)},
                   ],
               )
-              content = response.choices[0].message.content
-              if not content or not content.strip():
-                  # Treat empty/whitespace-only/None content (e.g. a model that
-                  # only emitted a tool call or reasoning trace) as a fallback
-                  # failure rather than crashing the whole review step on the
-                  # .strip().splitlines()[-1] call below.
-                  raise ValueError(f"OpenRouter returned empty content (model={model})")
-              return content, model
+              return response.choices[0].message.content
 
-          PROVIDERS = [
-              {
-                  "key": "anthropic",
-                  "label": "Claude (claude-sonnet-5)",
-                  "env_var": "ANTHROPIC_API_KEY",
-                  "call": call_anthropic,
-                  "exceptions": (anthropic.APIStatusError, anthropic.APIConnectionError),
+          # Tried in order until one produces usable output. Never the
+          # "openrouter/free" router itself: per OpenRouter's own docs that router
+          # randomly selects among all ~24 free-tier models, filtered only by
+          # feature support (tool calling, vision, structured outputs) — not by
+          # suitability for text review. In testing it landed on a content-safety
+          # classifier that returned "User Safety: safe" instead of an actual
+          # review — silently useless output, not a catchable error. These three
+          # are picked instead for actual code/reasoning capability: GLM 5.2 is
+          # explicitly positioned for project-level software engineering review;
+          # MiniMax M3 and Nemotron 3 Ultra are large general-purpose/agentic
+          # models kept as fallbacks in case GLM's shared free pool is congested
+          # (observed: upstream_429 on OpenRouter's shared pool for GLM alone).
+          # Override with the OPENROUTER_MODELS repo/org variable: a comma-separated
+          # list tried in the given order (e.g. "vendor/model-a:free,vendor/model-b:free").
+          DEFAULT_OPENROUTER_MODELS = [
+              'z-ai/glm-5.2:free',
+              'minimax/minimax-m3:free',
+              'nvidia/nemotron-3-ultra-550b-a55b:free',
+          ]
+
+          def call_openrouter(system_prompt, content_blocks):
+              # Used only as a last-resort fallback when a primary provider call
+              # fails (bad status code or connection error). OpenRouter exposes an
+              # OpenAI-compatible API, so the existing openai SDK covers this too —
+              # no extra dependency needed.
+              models_env = os.environ.get('OPENROUTER_MODELS') or os.environ.get('OPENROUTER_MODEL')
+              models = (
+                  [m.strip() for m in models_env.split(',') if m.strip()]
+                  if models_env else DEFAULT_OPENROUTER_MODELS
+              )
+              client = openai.OpenAI(
+                  base_url="https://openrouter.ai/api/v1",
+                  api_key=os.environ['OPENROUTER_API_KEY'],
+                  # The openai SDK's own default (600s) could eat most of the job's
+                  # 10-minute timeout on this tier alone — bound it well below
+                  # that. Each model only gets one retry (plus its initial
+                  # attempt) so the worst case across the whole list still
+                  # leaves the job time to post a result either way.
+                  timeout=45.0,
+                  max_retries=1,
+              )
+              last_exc = None
+              for model in models:
+                  try:
+                      response = client.chat.completions.create(
+                          model=model,
+                          messages=[
+                              {"role": "system", "content": system_prompt},
+                              {"role": "user", "content": _flatten_content_blocks(content_blocks)},
+                          ],
+                      )
+                      content = response.choices[0].message.content
+                      if not content or not content.strip():
+                          # Treat empty/whitespace-only/None content (e.g. a model
+                          # that only emitted a tool call or reasoning trace) as a
+                          # failure of this model, not a crash — try the next one.
+                          raise ValueError(f"OpenRouter returned empty content (model={model})")
+                      return content, model
+                  except Exception as e:
+                      print(f"OpenRouter model {model!r} failed: {type(e).__name__}: {e}")
+                      last_exc = e
+              raise last_exc or RuntimeError("No OpenRouter models configured (OPENROUTER_MODELS empty after parsing)")
+
+          # A single ordered chain tried until one tier succeeds — not a
+          # run-every-configured-provider consensus review. Each repo gets every
+          # provider key configured (org-wide), and the default order below
+          # reflects cost/scarcity: paid primaries first, Gemini's free-tier quota
+          # is scarce enough to treat as an emergency-only spare rather than an
+          # equal peer, then NVIDIA NIM and OpenRouter's free pool as two
+          # independent free-tier safety nets. NVIDIA goes first: tested live
+          # against this repo's own diffs, openai/gpt-oss-120b answered in
+          # 20-30s and, on a real ~1,200-line diff, caught 2 of 3 MUST FIX items
+          # correctly (see call_nvidia). OpenRouter stays as a second free-tier
+          # fallback rather than being dropped for it — already proven reliable
+          # in this repo's own review history (its default model list falls
+          # through to a working one when the first is congested) — so a bad day
+          # on NVIDIA's specific model doesn't take out the whole free tier.
+          # Local Ollama was tried as a further last resort and dropped: tested
+          # live on the fastest available box (qwen2.5-coder:7b and 14b, ~5-8 min
+          # per attempt), it never once produced an actual review in the required
+          # MUST FIX/CONSIDER/VERDICT format — 7B fabricated code that doesn't
+          # exist in the diff, 14B just summarized the change instead of
+          # reviewing it. A tier that can't do the job is worse than no tier: it
+          # burns most of the job's timeout to arrive at the same "no real review
+          # happened" outcome the neutral-comment path already reports instantly.
+          # Override per-repo with the REVIEW_TIERS variable — a comma-separated
+          # list of these keys in the order to try (valid keys: anthropic,
+          # openai, gemini, nvidia, openrouter — e.g. "anthropic,gemini" to skip
+          # the rest entirely). A tier is only actually attempted if it's also
+          # available() — has its API key configured.
+          DEFAULT_TIER_ORDER = ['anthropic', 'openai', 'gemini', 'nvidia', 'openrouter']
+
+          def _openrouter_tier(sp, cb):
+              content, model = call_openrouter(sp, cb)
+              return content, f"OpenRouter ({model})"
+
+          # "trusted" gates auto-approval: a real provider's clean PASS is trusted
+          # to approve the PR outright; NVIDIA NIM and OpenRouter are both free
+          # tiers of open-weight models — meaningfully weaker and, per live
+          # testing, capable of confidently wrong findings — so a PASS from
+          # either is shown but never auto-approves; see the event-decision
+          # logic below.
+          TIERS = {
+              'anthropic': {
+                  'label': 'Claude (claude-sonnet-5)',
+                  'available': lambda: bool(os.environ.get('ANTHROPIC_API_KEY')),
+                  'call': lambda sp, cb: (call_anthropic(sp, cb), 'Claude (claude-sonnet-5)'),
+                  'exceptions': (anthropic.APIStatusError, anthropic.APIConnectionError),
+                  'trusted': True,
               },
-              {
-                  "key": "openai",
-                  "label": "GPT (gpt-5)",
-                  "env_var": "OPENAI_API_KEY",
-                  "call": call_openai,
-                  "exceptions": (openai.APIStatusError, openai.APIConnectionError),
+              'openai': {
+                  'label': 'GPT (gpt-5)',
+                  'available': lambda: bool(os.environ.get('OPENAI_API_KEY')),
+                  'call': lambda sp, cb: (call_openai(sp, cb), 'GPT (gpt-5)'),
+                  'exceptions': (openai.APIStatusError, openai.APIConnectionError),
+                  'trusted': True,
               },
-              {
-                  "key": "gemini",
-                  "label": "Gemini (gemini-2.5-pro)",
-                  "env_var": "GEMINI_API_KEY",
-                  "call": call_gemini,
+              'gemini': {
+                  'label': 'Gemini (gemini-3.1-pro-preview)',
+                  'available': lambda: bool(os.environ.get('GEMINI_API_KEY')),
+                  'call': lambda sp, cb: (call_gemini(sp, cb), 'Gemini (gemini-3.1-pro-preview)'),
                   # genai.errors.APIError only covers errors the SDK parses from a
                   # response body (HTTP status errors); a genuine network failure
                   # (DNS, refused connection, timeout) surfaces as a raw httpx
                   # transport exception instead — must be caught here too, or an
-                  # outage on this one provider crashes the whole job and loses
-                  # the other providers' results.
-                  "exceptions": (genai.errors.APIError, httpx.TransportError),
+                  # outage on this one tier crashes the whole job before it ever
+                  # gets to try the next one.
+                  'exceptions': (genai_errors.APIError, httpx.TransportError),
+                  'trusted': True,
               },
-          ]
-
-          def configured_providers():
-              return [p for p in PROVIDERS if os.environ.get(p['env_var'])]
-
-          def review(provider, content_blocks, system_prompt):
-              return provider['call'](system_prompt, content_blocks)
-
-          SYNTHESIS_PROMPT = (
-              "You are given several code review write-ups of the same pull request, "
-              "from different reviewers, each already containing a summary, MUST FIX "
-              "items, CONSIDER items, and a verdict. Write a short (3-6 sentence) "
-              "plain-language TL;DR for a human skimming the PR: what the reviewers "
-              "agree on, and any notable disagreement (e.g. a MUST FIX only one "
-              "reviewer raised). Do not invent new findings, do not omit any MUST FIX "
-              "item that appears in the input, and do not state your own verdict — "
-              "this is a summary of what was already written, not a new review."
-          )
-
-          def call_ollama_synthesis(sections):
-              host = os.environ.get('OLLAMA_HOST') or 'http://localhost:11434'
-              client = openai.OpenAI(
-                  base_url=f"{host}/v1",
-                  api_key='ollama',  # unused by Ollama, SDK requires a non-empty value
-                  timeout=120.0,
-                  max_retries=0,  # local is either up or not; retrying just burns the job timeout
-              )
-              # Fallback model must already be pulled on the runner (`ollama pull
-              # qwen2.5-coder:3b`) — this call doesn't pull it on demand, it just
-              # fails and the caller skips the TL;DR block.
-              model = os.environ.get('OLLAMA_MODEL') or 'qwen2.5-coder:3b'
-              response = client.chat.completions.create(
-                  model=model,
-                  messages=[
-                      {"role": "system", "content": SYNTHESIS_PROMPT},
-                      {"role": "user", "content": '\n\n---\n\n'.join(sections)},
-                  ],
-              )
-              return response.choices[0].message.content, model
+              'nvidia': {
+                  'label': 'NVIDIA NIM (gpt-oss-120b)',
+                  'available': lambda: bool(os.environ.get('NVIDIA_API_KEY')),
+                  'call': lambda sp, cb: (call_nvidia(sp, cb), 'NVIDIA NIM (gpt-oss-120b)'),
+                  'exceptions': (openai.APIStatusError, openai.APIConnectionError),
+                  'trusted': False,
+              },
+              'openrouter': {
+                  'label': 'OpenRouter free tier',
+                  'available': lambda: bool(os.environ.get('OPENROUTER_API_KEY')),
+                  'call': _openrouter_tier,
+                  # call_openrouter already narrows its own internal per-model
+                  # failures to a single re-raised exception (or a clear
+                  # RuntimeError) — nothing more specific to catch here.
+                  'exceptions': (Exception,),
+                  'trusted': False,
+              },
+          }
 
           def post_review(body, event):
               token = os.environ['GH_TOKEN']
@@ -767,11 +846,27 @@ jobs:
               print(f"Skipping review: dependency update PR by {pr_actor!r} on branch {pr_head_ref!r}")
               sys.exit(0)
 
-          providers = configured_providers()
-          if not providers:
-              print("No provider API key set (ANTHROPIC_API_KEY/OPENAI_API_KEY/GEMINI_API_KEY), skipping review")
+          tiers_env = os.environ.get('REVIEW_TIERS')
+          tier_order = (
+              [t.strip() for t in tiers_env.split(',') if t.strip()]
+              if tiers_env else DEFAULT_TIER_ORDER
+          )
+          tier_candidates = []
+          for key in tier_order:
+              tier = TIERS.get(key)
+              if tier is None:
+                  print(f"Warning: unknown review tier {key!r} in REVIEW_TIERS — skipping")
+                  continue
+              if tier['available']():
+                  tier_candidates.append((key, tier))
+          if not tier_candidates:
+              print(
+                  "No review tier is available (checked: ANTHROPIC_API_KEY, "
+                  "OPENAI_API_KEY, GEMINI_API_KEY, NVIDIA_API_KEY, "
+                  "OPENROUTER_API_KEY), skipping review"
+              )
               sys.exit(0)
-          print(f"Configured providers: {[p['key'] for p in providers]}")
+          print(f"Tier order: {[k for k, _ in tier_candidates]}")
 
           if not os.environ.get('BASE_SHA') or not os.environ.get('HEAD_SHA') or not os.environ.get('PR_NUMBER'):
               print("No PR context (workflow_dispatch without PR?), skipping review")
@@ -868,69 +963,54 @@ jobs:
                       return value
               return None
 
-          sections = []
-          verdicts = []
-          for provider in providers:
-              section_label = provider['label']
+          # Try each available tier in order, stopping at the first one that
+          # produces usable output — not a run-every-configured-provider
+          # consensus review. Any failure (bad status code, rate limit,
+          # connection error) just moves on to the next tier; there's no
+          # special-casing by status code because every failure mode here
+          # means the same thing: this tier can't review right now, try the
+          # next one.
+          review_text = None
+          label = None
+          trusted = None
+          attempts = []
+          for key, tier in tier_candidates:
               try:
-                  review_text = review(provider, content_blocks, system_prompt)
-              except provider['exceptions'] as e:
-                  status_code = extract_status_code(e)
-                  if status_code is not None:
-                      print(
-                          f"{provider['key']} API error {status_code}: {e} — "
-                          f"attempting OpenRouter free-tier fallback"
-                      )
-                      error_detail = (
-                          f"{provider['label']} API returned status {status_code}. "
-                          f"This may indicate an outage or an account billing issue."
-                      )
-                  else:
-                      print(
-                          f"{provider['key']} API connection error: {e} — "
-                          f"attempting OpenRouter free-tier fallback"
-                      )
-                      error_detail = (
-                          f"Could not reach the {provider['label']} API. "
-                          f"This may indicate a temporary outage."
-                      )
-
-                  review_text = None
-                  if os.environ.get('OPENROUTER_API_KEY'):
-                      try:
-                          review_text, fallback_model = call_openrouter(system_prompt, content_blocks)
-                          section_label = f"{provider['label']} (fallback: OpenRouter {fallback_model})"
-                          print(f"{provider['key']} fallback via OpenRouter ({fallback_model}) succeeded")
-                      except Exception as fallback_err:
-                          print(
-                              f"OpenRouter fallback for {provider['key']} also failed: "
-                              f"{type(fallback_err).__name__}: {fallback_err}"
-                          )
-
-                  if review_text is None:
-                      sections.append(f"#### {provider['label']}\n\nReview could not complete: {error_detail}")
+                  review_text, label = tier['call'](system_prompt, content_blocks)
+                  if not review_text or not review_text.strip():
+                      # A provider SDK call can return None/empty content without
+                      # raising (e.g. a safety refusal or a tool-call-only
+                      # response) — treat that as a failed attempt too, not a
+                      # success with nothing to show. Letting it through would
+                      # both skip every later tier and crash a few lines down on
+                      # review_text.strip().splitlines()[-1] against an empty list.
+                      print(f"Tier {key!r} returned empty content — trying next tier")
+                      attempts.append(f"{tier['label']} — empty response")
+                      review_text = None
                       continue
+                  trusted = tier['trusted']
+                  print(f"Tier {key!r} succeeded ({label})")
+                  break
+              except tier['exceptions'] as e:
+                  status_code = extract_status_code(e)
+                  detail = f"status {status_code}" if status_code is not None else type(e).__name__
+                  print(f"Tier {key!r} failed ({detail}): {e} — trying next tier")
+                  attempts.append(f"{tier['label']} — {detail}")
+                  review_text = None
 
-              last_line = review_text.strip().splitlines()[-1].strip()
-              if last_line not in ("VERDICT: PASS", "VERDICT: ISSUES"):
-                  print(
-                      f"Warning: {provider['key']} returned unexpected verdict "
-                      f"line {last_line!r} — treating as ISSUES"
-                  )
-                  verdicts.append("ISSUES")
-              else:
-                  verdicts.append(last_line.removeprefix("VERDICT: "))
-              sections.append(f"#### {section_label}\n\n{review_text}")
-
-          if not verdicts:
-              # Carries the same diff-hash marker as a full review body (not just
-              # reviewed-sha) so a rerun after every provider failed is treated
-              # consistently by extract_diff_hash's unchanged-diff skip check,
-              # instead of that marker only ever being present on successful runs.
+          if review_text is None:
+              # Deliberately omits the reviewed-sha/diff-hash markers a real
+              # review body carries: this round produced no actual review, so a
+              # later trigger on the same commit (e.g. a manual re-run once a
+              # provider's outage clears) must be free to try the whole tier
+              # chain again rather than being skipped by extract_reviewed_sha's
+              # "HEAD already reviewed" check or extract_diff_hash's unchanged-
+              # diff check, either of which would otherwise treat this failure
+              # as a completed review forever.
               neutral_body = (
-                  f"## Code Review\n<!-- reviewed-sha: {head_sha} -->"
-                  f"<!-- diff-hash: {diff_hash} -->\n\n"
-                  + '\n\n---\n\n'.join(sections)
+                  "## Code Review\n\n"
+                  "Every configured review tier failed:\n"
+                  + '\n'.join(f"- {a}" for a in attempts)
               )
               try:
                   post_review(neutral_body, "COMMENT")
@@ -938,24 +1018,41 @@ jobs:
                   print(f"Warning: could not post neutral comment: {post_err}")
               sys.exit(0)
 
-          has_must_fix = "ISSUES" in verdicts
-          event = "REQUEST_CHANGES" if has_must_fix else "APPROVE"
+          last_line = review_text.strip().splitlines()[-1].strip()
+          if last_line not in ("VERDICT: PASS", "VERDICT: ISSUES"):
+              print(f"Warning: {label} returned unexpected verdict line {last_line!r} — treating as ISSUES")
+              verdict = "ISSUES"
+          else:
+              verdict = last_line.removeprefix("VERDICT: ")
 
-          # Best-effort only: synthesizing a plain-language digest of the reviews
-          # above is a small enough prompt to be a good fit for CPU-only local
-          # Ollama, but it never gates the review — any failure (not self-hosted,
-          # Ollama down, model not pulled, timeout) just skips the TL;DR block.
-          if os.environ.get('RUNNER_ENVIRONMENT') == 'self-hosted' and len(verdicts) >= 2:
-              try:
-                  tldr_text, tldr_model = call_ollama_synthesis(sections)
-                  sections.insert(0, f"### TL;DR (local synthesis via Ollama, {tldr_model})\n\n{tldr_text}")
-              except Exception as e:
-                  print(f"Warning: Ollama synthesis skipped: {e}")
+          fallback_banner = ''
+          if not trusted:
+              # A free-tier/local fallback's ISSUES still surface as real
+              # findings — false negatives (missing a real bug) are worse than a
+              # spurious REQUEST_CHANGES. But its PASS is not trusted enough to
+              # justify auto-approving a PR no real provider ever reviewed — see
+              # the event decision below; a human still sees the write-up and
+              # can judge it themselves.
+              fallback_banner = (
+                  f"> ⚠️ **This review came from a lower-trust fallback tier ({label})"
+                  + (", after earlier tiers failed" if attempts else "")
+                  + ".** A fallback PASS is not treated as a clean approval — treat "
+                  "this review as informational until a primary provider is confirmed "
+                  "working"
+                  + (":\n" + '\n'.join(f"> - {a}" for a in attempts) if attempts else ".")
+                  + "\n\n"
+              )
+
+          if verdict == "PASS" and not trusted:
+              event = "COMMENT"
+          else:
+              event = "REQUEST_CHANGES" if verdict == "ISSUES" else "APPROVE"
 
           full_body = (
               f"## Code Review\n<!-- reviewed-sha: {head_sha} -->"
               f"<!-- diff-hash: {diff_hash} -->\n\n"
-              + '\n\n---\n\n'.join(sections)
+              + fallback_banner
+              + f"#### {label}\n\n{review_text}"
           )
           try:
               post_review(full_body, event)
