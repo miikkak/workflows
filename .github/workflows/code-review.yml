@@ -642,7 +642,13 @@ jobs:
                   # ever falling back to noting the failure — bound it well below
                   # that.
                   timeout=45.0,
-                  max_retries=1,
+                  # This is the last line of defense before the review job gives up
+                  # entirely, and OpenRouter's free-tier 429s carry an explicit
+                  # retry_after_seconds (observed: 5) signaling a transient,
+                  # shared-pool throttle rather than real unavailability — worth a
+                  # few extra attempts (the SDK backs off and honors Retry-After
+                  # automatically) rather than surrendering after one retry.
+                  max_retries=3,
               )
               model = os.environ.get('OPENROUTER_MODEL') or 'z-ai/glm-5.2:free'
               response = client.chat.completions.create(
