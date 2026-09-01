@@ -734,8 +734,11 @@ jobs:
           # equal peer, OpenRouter's free pool next, local Ollama (no rate limit
           # or cost, but slowest and lowest quality) absolute last. Override
           # per-repo with the REVIEW_TIERS variable — a comma-separated list of
-          # these keys in the order to try (e.g. "anthropic,gemini,ollama" to
-          # skip openai/openrouter entirely).
+          # these keys in the order to try (valid keys: anthropic, openai,
+          # gemini, openrouter, ollama — e.g. "anthropic,gemini,ollama" to
+          # skip openai/openrouter entirely). A tier is only actually
+          # attempted if it's also available() — has its API key configured,
+          # or for ollama, is running on a self-hosted runner.
           DEFAULT_TIER_ORDER = ['anthropic', 'openai', 'gemini', 'openrouter', 'ollama']
 
           def _openrouter_tier(sp, cb):
