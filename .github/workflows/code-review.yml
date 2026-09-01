@@ -644,7 +644,7 @@ jobs:
                   timeout=45.0,
                   max_retries=1,
               )
-              model = os.environ.get('OPENROUTER_MODEL') or 'cohere/north-mini-code:free'
+              model = os.environ.get('OPENROUTER_MODEL') or 'z-ai/glm-5.2:free'
               response = client.chat.completions.create(
                   model=model,
                   messages=[
@@ -870,8 +870,10 @@ jobs:
 
           sections = []
           verdicts = []
+          fallback_events = []
           for provider in providers:
               section_label = provider['label']
+              used_fallback = False
               try:
                   review_text = review(provider, content_blocks, system_prompt)
               except provider['exceptions'] as e:
@@ -900,6 +902,7 @@ jobs:
                       try:
                           review_text, fallback_model = call_openrouter(system_prompt, content_blocks)
                           section_label = f"{provider['label']} (fallback: OpenRouter {fallback_model})"
+                          used_fallback = True
                           print(f"{provider['key']} fallback via OpenRouter ({fallback_model}) succeeded")
                       except Exception as fallback_err:
                           print(
@@ -911,25 +914,54 @@ jobs:
                       sections.append(f"#### {provider['label']}\n\nReview could not complete: {error_detail}")
                       continue
 
+                  if used_fallback:
+                      fallback_events.append(f"{provider['label']} → OpenRouter {fallback_model} ({error_detail})")
+
               last_line = review_text.strip().splitlines()[-1].strip()
               if last_line not in ("VERDICT: PASS", "VERDICT: ISSUES"):
                   print(
                       f"Warning: {provider['key']} returned unexpected verdict "
                       f"line {last_line!r} — treating as ISSUES"
                   )
-                  verdicts.append("ISSUES")
+                  verdict = "ISSUES"
               else:
-                  verdicts.append(last_line.removeprefix("VERDICT: "))
+                  verdict = last_line.removeprefix("VERDICT: ")
+              # A free-tier fallback model's ISSUES still surface as real findings —
+              # false negatives (missing a real bug) are worse than a spurious
+              # REQUEST_CHANGES. But its PASS is not trusted enough to justify
+              # auto-approving a PR the primary provider never actually reviewed —
+              # excluded from `verdicts` so it can't singlehandedly clear the gate
+              # to APPROVE below; a human still sees the fallback's write-up in the
+              # posted sections and can judge it themselves.
+              if not (used_fallback and verdict == "PASS"):
+                  verdicts.append(verdict)
               sections.append(f"#### {section_label}\n\n{review_text}")
 
+          fallback_banner = ''
+          if fallback_events:
+              fallback_banner = (
+                  "> ⚠️ **A primary review provider failed and a free-tier OpenRouter "
+                  "fallback stood in.** Its findings are shown below, but a fallback "
+                  "PASS is not trusted enough to auto-approve — treat this review as "
+                  "incomplete until the primary provider is confirmed working:\n"
+                  + '\n'.join(f"> - {e}" for e in fallback_events)
+                  + "\n\n"
+              )
+
           if not verdicts:
-              # Carries the same diff-hash marker as a full review body (not just
-              # reviewed-sha) so a rerun after every provider failed is treated
-              # consistently by extract_diff_hash's unchanged-diff skip check,
-              # instead of that marker only ever being present on successful runs.
+              # Reached either when every provider (including any fallback) failed
+              # outright, or when the only verdicts were fallback PASSes — a
+              # fallback PASS is deliberately excluded from `verdicts` above, so
+              # this path also covers "the only review we got isn't trustworthy
+              # enough to approve on its own." Carries the same diff-hash marker as
+              # a full review body (not just reviewed-sha) so a rerun in either
+              # case is treated consistently by extract_diff_hash's unchanged-diff
+              # skip check, instead of that marker only ever being present on
+              # successful runs.
               neutral_body = (
                   f"## Code Review\n<!-- reviewed-sha: {head_sha} -->"
                   f"<!-- diff-hash: {diff_hash} -->\n\n"
+                  + fallback_banner
                   + '\n\n---\n\n'.join(sections)
               )
               try:
@@ -955,6 +987,7 @@ jobs:
           full_body = (
               f"## Code Review\n<!-- reviewed-sha: {head_sha} -->"
               f"<!-- diff-hash: {diff_hash} -->\n\n"
+              + fallback_banner
               + '\n\n---\n\n'.join(sections)
           )
           try:
