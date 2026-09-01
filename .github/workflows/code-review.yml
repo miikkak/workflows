@@ -66,7 +66,12 @@ jobs:
         (inputs.runner == null && github.event.pull_request.draft == false) ||
         (inputs.runner != null && inputs.enabled == true)
       )
-    timeout-minutes: 10
+    # 20, not the previous 10: the last-resort local Ollama fallback is allowed
+    # up to ~10 minutes for a real generation (no rate limit or cost pressure on
+    # it, per design — see call_ollama_review), so the job budget needs enough
+    # headroom above that for setup, the primary-provider attempts, and the
+    # OpenRouter fallback chain that all run before it.
+    timeout-minutes: 20
     env:
       ANTHROPIC_VERSION: "1.2.0"
       OPENAI_VERSION: "3.2.0"
@@ -126,6 +131,7 @@ jobs:
           RUNNER_ENVIRONMENT: ${{ runner.environment }}
           OLLAMA_HOST: ${{ vars.OLLAMA_HOST }}
           OLLAMA_MODEL: ${{ vars.OLLAMA_MODEL }}
+          OLLAMA_REVIEW_MODEL: ${{ vars.OLLAMA_REVIEW_MODEL }}
         run: |
           python3 << 'PYEOF'
           import hashlib
@@ -616,7 +622,7 @@ jobs:
           def call_gemini(system_prompt, content_blocks):
               client = genai.Client(api_key=os.environ['GEMINI_API_KEY'])
               response = client.models.generate_content(
-                  model="gemini-2.5-pro",
+                  model="gemini-3.1-pro-preview",
                   contents=_flatten_content_blocks(content_blocks),
                   config=genai_types.GenerateContentConfig(system_instruction=system_prompt),
               )
@@ -655,13 +661,11 @@ jobs:
               client = openai.OpenAI(
                   base_url="https://openrouter.ai/api/v1",
                   api_key=os.environ['OPENROUTER_API_KEY'],
-                  # The openai SDK's own default (600s) could eat the job's whole
-                  # 10-minute timeout across a couple of failed providers before
-                  # ever falling back to noting the failure — bound it well below
-                  # that. With multiple candidate models now tried in sequence,
-                  # each one only gets one retry (plus its initial attempt) so the
-                  # worst case across the whole list still fits comfortably inside
-                  # the job timeout.
+                  # The openai SDK's own default (600s) could eat most of the job's
+                  # timeout budget on this tier alone, crowding out the local Ollama
+                  # tier that comes after it — bound it well below that. Each model
+                  # only gets one retry (plus its initial attempt) so the worst case
+                  # across the whole list still leaves room for what follows.
                   timeout=45.0,
                   max_retries=1,
               )
@@ -704,7 +708,7 @@ jobs:
               },
               {
                   "key": "gemini",
-                  "label": "Gemini (gemini-2.5-pro)",
+                  "label": "Gemini (gemini-3.1-pro-preview)",
                   "env_var": "GEMINI_API_KEY",
                   "call": call_gemini,
                   # genai.errors.APIError only covers errors the SDK parses from a
@@ -754,6 +758,40 @@ jobs:
                   ],
               )
               return response.choices[0].message.content, model
+
+          def call_ollama_review(system_prompt, content_blocks):
+              # Absolute last resort, tried only when every cloud option (primary
+              # providers and the whole OpenRouter free-tier list) has failed, and
+              # only on a self-hosted runner (Ollama isn't installed on GitHub-hosted
+              # ones, and pulling a multi-GB model on demand there would be pointless).
+              # Unlike every other tier this one is neither rate-limited nor metered,
+              # so it can afford to actually wait for a real generation rather than
+              # failing fast — bounded by the job's own timeout, not an artificial one
+              # here, per the "no time pressure, just get a meaningful review" call.
+              host = os.environ.get('OLLAMA_HOST') or 'http://localhost:11434'
+              client = openai.OpenAI(
+                  base_url=f"{host}/v1",
+                  api_key='ollama',  # unused by Ollama, SDK requires a non-empty value
+                  timeout=600.0,
+                  max_retries=0,  # local is either up or not; retrying just burns the job timeout
+              )
+              # Must already be pulled on the runner (`ollama pull qwen2.5-coder:7b`)
+              # — this call doesn't pull it on demand, it just fails. Deliberately a
+              # distinct variable from OLLAMA_MODEL (the small model used only for
+              # the best-effort TL;DR synthesis below) — a real stand-in review
+              # warrants the largest coding-capable model actually available locally.
+              model = os.environ.get('OLLAMA_REVIEW_MODEL') or 'qwen2.5-coder:7b'
+              response = client.chat.completions.create(
+                  model=model,
+                  messages=[
+                      {"role": "system", "content": system_prompt},
+                      {"role": "user", "content": _flatten_content_blocks(content_blocks)},
+                  ],
+              )
+              content = response.choices[0].message.content
+              if not content or not content.strip():
+                  raise ValueError(f"Ollama returned empty content (model={model})")
+              return content, f"local Ollama {model}"
 
           def post_review(body, event):
               token = os.environ['GH_TOKEN']
@@ -894,6 +932,39 @@ jobs:
                       return value
               return None
 
+          # Every primary provider that fails in the same round shares one fallback
+          # attempt instead of triggering its own — computed lazily on the first
+          # failure and reused for any further ones. Without this, two primaries
+          # failing in the same run (routine right now: Anthropic out of credit,
+          # Gemini mid-migration) would run the whole OpenRouter model list twice
+          # for identical content, and — now that Ollama is the tier after it —
+          # could burn two separate ten-minute local generations in one job.
+          shared_fallback = {'attempted': False, 'content': None, 'label': None, 'section_added': False}
+
+          def get_shared_fallback(system_prompt, content_blocks):
+              if shared_fallback['attempted']:
+                  return shared_fallback['content'], shared_fallback['label']
+              shared_fallback['attempted'] = True
+              if os.environ.get('OPENROUTER_API_KEY'):
+                  try:
+                      content, model = call_openrouter(system_prompt, content_blocks)
+                      shared_fallback['content'] = content
+                      shared_fallback['label'] = f"OpenRouter {model}"
+                      print(f"OpenRouter fallback succeeded ({model})")
+                      return shared_fallback['content'], shared_fallback['label']
+                  except Exception as e:
+                      print(f"OpenRouter fallback chain exhausted: {type(e).__name__}: {e}")
+              if os.environ.get('RUNNER_ENVIRONMENT') == 'self-hosted':
+                  try:
+                      content, label = call_ollama_review(system_prompt, content_blocks)
+                      shared_fallback['content'] = content
+                      shared_fallback['label'] = label
+                      print(f"{label} fallback succeeded")
+                      return shared_fallback['content'], shared_fallback['label']
+                  except Exception as e:
+                      print(f"Local Ollama review fallback failed: {type(e).__name__}: {e}")
+              return None, None
+
           sections = []
           verdicts = []
           fallback_events = []
@@ -907,7 +978,7 @@ jobs:
                   if status_code is not None:
                       print(
                           f"{provider['key']} API error {status_code}: {e} — "
-                          f"attempting OpenRouter free-tier fallback"
+                          f"attempting fallback"
                       )
                       error_detail = (
                           f"{provider['label']} API returned status {status_code}. "
@@ -916,32 +987,24 @@ jobs:
                   else:
                       print(
                           f"{provider['key']} API connection error: {e} — "
-                          f"attempting OpenRouter free-tier fallback"
+                          f"attempting fallback"
                       )
                       error_detail = (
                           f"Could not reach the {provider['label']} API. "
                           f"This may indicate a temporary outage."
                       )
 
-                  review_text = None
-                  if os.environ.get('OPENROUTER_API_KEY'):
-                      try:
-                          review_text, fallback_model = call_openrouter(system_prompt, content_blocks)
-                          section_label = f"{provider['label']} (fallback: OpenRouter {fallback_model})"
-                          used_fallback = True
-                          print(f"{provider['key']} fallback via OpenRouter ({fallback_model}) succeeded")
-                      except Exception as fallback_err:
-                          print(
-                              f"OpenRouter fallback for {provider['key']} also failed: "
-                              f"{type(fallback_err).__name__}: {fallback_err}"
-                          )
+                  review_text, fallback_label = get_shared_fallback(system_prompt, content_blocks)
+                  if review_text is not None:
+                      section_label = f"{provider['label']} (fallback: {fallback_label})"
+                      used_fallback = True
 
                   if review_text is None:
                       sections.append(f"#### {provider['label']}\n\nReview could not complete: {error_detail}")
                       continue
 
                   if used_fallback:
-                      fallback_events.append(f"{provider['label']} → OpenRouter {fallback_model} ({error_detail})")
+                      fallback_events.append(f"{provider['label']} → {fallback_label} ({error_detail})")
 
               last_line = review_text.strip().splitlines()[-1].strip()
               if last_line not in ("VERDICT: PASS", "VERDICT: ISSUES"):
@@ -961,15 +1024,27 @@ jobs:
               # posted sections and can judge it themselves.
               if not (used_fallback and verdict == "PASS"):
                   verdicts.append(verdict)
-              sections.append(f"#### {section_label}\n\n{review_text}")
+              # A shared fallback result is identical text for every provider that
+              # needed it — post the full write-up once, and a short pointer to it
+              # for anything after, instead of repeating the same review verbatim.
+              if used_fallback and shared_fallback['section_added']:
+                  sections.append(
+                      f"#### {section_label}\n\n"
+                      "_(same fallback result as the shared fallback section above)_"
+                  )
+              else:
+                  sections.append(f"#### {section_label}\n\n{review_text}")
+                  if used_fallback:
+                      shared_fallback['section_added'] = True
 
           fallback_banner = ''
           if fallback_events:
               fallback_banner = (
-                  "> ⚠️ **A primary review provider failed and a free-tier OpenRouter "
-                  "fallback stood in.** Its findings are shown below, but a fallback "
-                  "PASS is not trusted enough to auto-approve — treat this review as "
-                  "incomplete until the primary provider is confirmed working:\n"
+                  "> ⚠️ **A primary review provider failed and a fallback (free-tier "
+                  "OpenRouter model or local Ollama) stood in.** Its findings are "
+                  "shown below, but a fallback PASS is not trusted enough to "
+                  "auto-approve — treat this review as incomplete until the primary "
+                  "provider is confirmed working:\n"
                   + '\n'.join(f"> - {e}" for e in fallback_events)
                   + "\n\n"
               )
