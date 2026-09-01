@@ -43,8 +43,8 @@ jobs:
           # only when the PR comes from an actual fork, never for a branch
           # pushed directly into this repo or a non-pull_request event.
           # Secrets are already stripped by GitHub for fork-triggered
-          # pull_request runs regardless (configured_providers() below finds
-          # none and exits cleanly) — this guards the separate risk of PR-
+          # pull_request runs regardless (no review tier ends up available below
+          # and the job exits cleanly) — this guards the separate risk of PR-
           # controlled code executing on self-hosted infrastructure at all.
           untrusted_fork=false
           if [[ "${EVENT_NAME}" == "pull_request" && "${HEAD_REPO}" != "${BASE_REPO}" ]]; then
@@ -121,6 +121,7 @@ jobs:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
           OPENROUTER_MODELS: ${{ vars.OPENROUTER_MODELS }}
+          REVIEW_TIERS: ${{ vars.REVIEW_TIERS }}
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
           REPO: ${{ github.repository }}
@@ -130,7 +131,6 @@ jobs:
           PR_HEAD_REF: ${{ github.head_ref }}
           RUNNER_ENVIRONMENT: ${{ runner.environment }}
           OLLAMA_HOST: ${{ vars.OLLAMA_HOST }}
-          OLLAMA_MODEL: ${{ vars.OLLAMA_MODEL }}
           OLLAMA_REVIEW_MODEL: ${{ vars.OLLAMA_REVIEW_MODEL }}
         run: |
           python3 << 'PYEOF'
@@ -396,9 +396,11 @@ jobs:
               return '\n\n---\n\n'.join(parts)
 
           def extract_consider_items(body):
-              # A combined multi-provider body has one "### CONSIDER" section per
-              # provider (under separate "#### <model>" headings) — accumulate all
-              # of them rather than stopping after the first.
+              # Each review body has one section (single review tier per round),
+              # but this still accumulates across multiple "### CONSIDER" headings
+              # rather than stopping after the first — harmless, and keeps this
+              # correct against any older multi-section review body still in a
+              # PR's history from before reviews moved to a single tiered attempt.
               lines = body.split('\n')
               consider_lines = []
               in_consider = False
@@ -691,74 +693,6 @@ jobs:
                       last_exc = e
               raise last_exc or RuntimeError("No OpenRouter models configured (OPENROUTER_MODELS empty after parsing)")
 
-          PROVIDERS = [
-              {
-                  "key": "anthropic",
-                  "label": "Claude (claude-sonnet-5)",
-                  "env_var": "ANTHROPIC_API_KEY",
-                  "call": call_anthropic,
-                  "exceptions": (anthropic.APIStatusError, anthropic.APIConnectionError),
-              },
-              {
-                  "key": "openai",
-                  "label": "GPT (gpt-5)",
-                  "env_var": "OPENAI_API_KEY",
-                  "call": call_openai,
-                  "exceptions": (openai.APIStatusError, openai.APIConnectionError),
-              },
-              {
-                  "key": "gemini",
-                  "label": "Gemini (gemini-3.1-pro-preview)",
-                  "env_var": "GEMINI_API_KEY",
-                  "call": call_gemini,
-                  # genai.errors.APIError only covers errors the SDK parses from a
-                  # response body (HTTP status errors); a genuine network failure
-                  # (DNS, refused connection, timeout) surfaces as a raw httpx
-                  # transport exception instead — must be caught here too, or an
-                  # outage on this one provider crashes the whole job and loses
-                  # the other providers' results.
-                  "exceptions": (genai.errors.APIError, httpx.TransportError),
-              },
-          ]
-
-          def configured_providers():
-              return [p for p in PROVIDERS if os.environ.get(p['env_var'])]
-
-          def review(provider, content_blocks, system_prompt):
-              return provider['call'](system_prompt, content_blocks)
-
-          SYNTHESIS_PROMPT = (
-              "You are given several code review write-ups of the same pull request, "
-              "from different reviewers, each already containing a summary, MUST FIX "
-              "items, CONSIDER items, and a verdict. Write a short (3-6 sentence) "
-              "plain-language TL;DR for a human skimming the PR: what the reviewers "
-              "agree on, and any notable disagreement (e.g. a MUST FIX only one "
-              "reviewer raised). Do not invent new findings, do not omit any MUST FIX "
-              "item that appears in the input, and do not state your own verdict — "
-              "this is a summary of what was already written, not a new review."
-          )
-
-          def call_ollama_synthesis(sections):
-              host = os.environ.get('OLLAMA_HOST') or 'http://localhost:11434'
-              client = openai.OpenAI(
-                  base_url=f"{host}/v1",
-                  api_key='ollama',  # unused by Ollama, SDK requires a non-empty value
-                  timeout=120.0,
-                  max_retries=0,  # local is either up or not; retrying just burns the job timeout
-              )
-              # Fallback model must already be pulled on the runner (`ollama pull
-              # qwen2.5-coder:3b`) — this call doesn't pull it on demand, it just
-              # fails and the caller skips the TL;DR block.
-              model = os.environ.get('OLLAMA_MODEL') or 'qwen2.5-coder:3b'
-              response = client.chat.completions.create(
-                  model=model,
-                  messages=[
-                      {"role": "system", "content": SYNTHESIS_PROMPT},
-                      {"role": "user", "content": '\n\n---\n\n'.join(sections)},
-                  ],
-              )
-              return response.choices[0].message.content, model
-
           def call_ollama_review(system_prompt, content_blocks):
               # Absolute last resort, tried only when every cloud option (primary
               # providers and the whole OpenRouter free-tier list) has failed, and
@@ -777,9 +711,8 @@ jobs:
               )
               # Must already be pulled on the runner (`ollama pull qwen2.5-coder:7b`)
               # — this call doesn't pull it on demand, it just fails. Deliberately a
-              # distinct variable from OLLAMA_MODEL (the small model used only for
-              # the best-effort TL;DR synthesis below) — a real stand-in review
-              # warrants the largest coding-capable model actually available locally.
+              # A real stand-in review warrants the largest coding-capable model
+              # actually available locally — configure with OLLAMA_REVIEW_MODEL.
               model = os.environ.get('OLLAMA_REVIEW_MODEL') or 'qwen2.5-coder:7b'
               response = client.chat.completions.create(
                   model=model,
@@ -792,6 +725,76 @@ jobs:
               if not content or not content.strip():
                   raise ValueError(f"Ollama returned empty content (model={model})")
               return content, f"local Ollama {model}"
+
+          # A single ordered chain tried until one tier succeeds — not a
+          # run-every-configured-provider consensus review. Each repo gets every
+          # provider key configured (org-wide), and the default order below
+          # reflects cost/scarcity: paid primaries first, Gemini's free-tier quota
+          # is scarce enough to treat as an emergency-only spare rather than an
+          # equal peer, OpenRouter's free pool next, local Ollama (no rate limit
+          # or cost, but slowest and lowest quality) absolute last. Override
+          # per-repo with the REVIEW_TIERS variable — a comma-separated list of
+          # these keys in the order to try (e.g. "anthropic,gemini,ollama" to
+          # skip openai/openrouter entirely).
+          DEFAULT_TIER_ORDER = ['anthropic', 'openai', 'gemini', 'openrouter', 'ollama']
+
+          def _openrouter_tier(sp, cb):
+              content, model = call_openrouter(sp, cb)
+              return content, f"OpenRouter ({model})"
+
+          def _ollama_tier(sp, cb):
+              return call_ollama_review(sp, cb)
+
+          # "trusted" gates auto-approval: a real provider's clean PASS is trusted
+          # to approve the PR outright; OpenRouter's free tier and local Ollama
+          # are both meaningfully weaker reviewers, so a PASS from either is shown
+          # but never auto-approves — see the event-decision logic below.
+          TIERS = {
+              'anthropic': {
+                  'label': 'Claude (claude-sonnet-5)',
+                  'available': lambda: bool(os.environ.get('ANTHROPIC_API_KEY')),
+                  'call': lambda sp, cb: (call_anthropic(sp, cb), 'Claude (claude-sonnet-5)'),
+                  'exceptions': (anthropic.APIStatusError, anthropic.APIConnectionError),
+                  'trusted': True,
+              },
+              'openai': {
+                  'label': 'GPT (gpt-5)',
+                  'available': lambda: bool(os.environ.get('OPENAI_API_KEY')),
+                  'call': lambda sp, cb: (call_openai(sp, cb), 'GPT (gpt-5)'),
+                  'exceptions': (openai.APIStatusError, openai.APIConnectionError),
+                  'trusted': True,
+              },
+              'gemini': {
+                  'label': 'Gemini (gemini-3.1-pro-preview)',
+                  'available': lambda: bool(os.environ.get('GEMINI_API_KEY')),
+                  'call': lambda sp, cb: (call_gemini(sp, cb), 'Gemini (gemini-3.1-pro-preview)'),
+                  # genai.errors.APIError only covers errors the SDK parses from a
+                  # response body (HTTP status errors); a genuine network failure
+                  # (DNS, refused connection, timeout) surfaces as a raw httpx
+                  # transport exception instead — must be caught here too, or an
+                  # outage on this one tier crashes the whole job before it ever
+                  # gets to try the next one.
+                  'exceptions': (genai.errors.APIError, httpx.TransportError),
+                  'trusted': True,
+              },
+              'openrouter': {
+                  'label': 'OpenRouter free tier',
+                  'available': lambda: bool(os.environ.get('OPENROUTER_API_KEY')),
+                  'call': _openrouter_tier,
+                  # call_openrouter already narrows its own internal per-model
+                  # failures to a single re-raised exception (or a clear
+                  # RuntimeError) — nothing more specific to catch here.
+                  'exceptions': (Exception,),
+                  'trusted': False,
+              },
+              'ollama': {
+                  'label': 'Local Ollama',
+                  'available': lambda: os.environ.get('RUNNER_ENVIRONMENT') == 'self-hosted',
+                  'call': _ollama_tier,
+                  'exceptions': (Exception,),
+                  'trusted': False,
+              },
+          }
 
           def post_review(body, event):
               token = os.environ['GH_TOKEN']
@@ -831,11 +834,27 @@ jobs:
               print(f"Skipping review: dependency update PR by {pr_actor!r} on branch {pr_head_ref!r}")
               sys.exit(0)
 
-          providers = configured_providers()
-          if not providers:
-              print("No provider API key set (ANTHROPIC_API_KEY/OPENAI_API_KEY/GEMINI_API_KEY), skipping review")
+          tiers_env = os.environ.get('REVIEW_TIERS')
+          tier_order = (
+              [t.strip() for t in tiers_env.split(',') if t.strip()]
+              if tiers_env else DEFAULT_TIER_ORDER
+          )
+          tier_candidates = []
+          for key in tier_order:
+              tier = TIERS.get(key)
+              if tier is None:
+                  print(f"Warning: unknown review tier {key!r} in REVIEW_TIERS — skipping")
+                  continue
+              if tier['available']():
+                  tier_candidates.append((key, tier))
+          if not tier_candidates:
+              print(
+                  "No review tier is available (checked: ANTHROPIC_API_KEY, "
+                  "OPENAI_API_KEY, GEMINI_API_KEY, OPENROUTER_API_KEY, and "
+                  "self-hosted Ollama), skipping review"
+              )
               sys.exit(0)
-          print(f"Configured providers: {[p['key'] for p in providers]}")
+          print(f"Tier order: {[k for k, _ in tier_candidates]}")
 
           if not os.environ.get('BASE_SHA') or not os.environ.get('HEAD_SHA') or not os.environ.get('PR_NUMBER'):
               print("No PR context (workflow_dispatch without PR?), skipping review")
@@ -932,138 +951,40 @@ jobs:
                       return value
               return None
 
-          # Every primary provider that fails in the same round shares one fallback
-          # attempt instead of triggering its own — computed lazily on the first
-          # failure and reused for any further ones. Without this, two primaries
-          # failing in the same run (routine right now: Anthropic out of credit,
-          # Gemini mid-migration) would run the whole OpenRouter model list twice
-          # for identical content, and — now that Ollama is the tier after it —
-          # could burn two separate ten-minute local generations in one job.
-          shared_fallback = {'attempted': False, 'content': None, 'label': None, 'section_added': False}
-
-          def get_shared_fallback(system_prompt, content_blocks):
-              if shared_fallback['attempted']:
-                  return shared_fallback['content'], shared_fallback['label']
-              shared_fallback['attempted'] = True
-              if os.environ.get('OPENROUTER_API_KEY'):
-                  try:
-                      content, model = call_openrouter(system_prompt, content_blocks)
-                      shared_fallback['content'] = content
-                      shared_fallback['label'] = f"OpenRouter {model}"
-                      print(f"OpenRouter fallback succeeded ({model})")
-                      return shared_fallback['content'], shared_fallback['label']
-                  except Exception as e:
-                      print(f"OpenRouter fallback chain exhausted: {type(e).__name__}: {e}")
-              if os.environ.get('RUNNER_ENVIRONMENT') == 'self-hosted':
-                  try:
-                      content, label = call_ollama_review(system_prompt, content_blocks)
-                      shared_fallback['content'] = content
-                      shared_fallback['label'] = label
-                      print(f"{label} fallback succeeded")
-                      return shared_fallback['content'], shared_fallback['label']
-                  except Exception as e:
-                      print(f"Local Ollama review fallback failed: {type(e).__name__}: {e}")
-              return None, None
-
-          sections = []
-          verdicts = []
-          fallback_events = []
-          for provider in providers:
-              section_label = provider['label']
-              used_fallback = False
+          # Try each available tier in order, stopping at the first one that
+          # produces usable output — not a run-every-configured-provider
+          # consensus review. Any failure (bad status code, rate limit,
+          # connection error) just moves on to the next tier; there's no
+          # special-casing by status code because every failure mode here
+          # means the same thing: this tier can't review right now, try the
+          # next one.
+          review_text = None
+          label = None
+          trusted = None
+          attempts = []
+          for key, tier in tier_candidates:
               try:
-                  review_text = review(provider, content_blocks, system_prompt)
-              except provider['exceptions'] as e:
+                  review_text, label = tier['call'](system_prompt, content_blocks)
+                  trusted = tier['trusted']
+                  print(f"Tier {key!r} succeeded ({label})")
+                  break
+              except tier['exceptions'] as e:
                   status_code = extract_status_code(e)
-                  if status_code is not None:
-                      print(
-                          f"{provider['key']} API error {status_code}: {e} — "
-                          f"attempting fallback"
-                      )
-                      error_detail = (
-                          f"{provider['label']} API returned status {status_code}. "
-                          f"This may indicate an outage or an account billing issue."
-                      )
-                  else:
-                      print(
-                          f"{provider['key']} API connection error: {e} — "
-                          f"attempting fallback"
-                      )
-                      error_detail = (
-                          f"Could not reach the {provider['label']} API. "
-                          f"This may indicate a temporary outage."
-                      )
+                  detail = f"status {status_code}" if status_code is not None else type(e).__name__
+                  print(f"Tier {key!r} failed ({detail}): {e} — trying next tier")
+                  attempts.append(f"{tier['label']} — {detail}")
+                  review_text = None
 
-                  review_text, fallback_label = get_shared_fallback(system_prompt, content_blocks)
-                  if review_text is not None:
-                      section_label = f"{provider['label']} (fallback: {fallback_label})"
-                      used_fallback = True
-
-                  if review_text is None:
-                      sections.append(f"#### {provider['label']}\n\nReview could not complete: {error_detail}")
-                      continue
-
-                  if used_fallback:
-                      fallback_events.append(f"{provider['label']} → {fallback_label} ({error_detail})")
-
-              last_line = review_text.strip().splitlines()[-1].strip()
-              if last_line not in ("VERDICT: PASS", "VERDICT: ISSUES"):
-                  print(
-                      f"Warning: {provider['key']} returned unexpected verdict "
-                      f"line {last_line!r} — treating as ISSUES"
-                  )
-                  verdict = "ISSUES"
-              else:
-                  verdict = last_line.removeprefix("VERDICT: ")
-              # A free-tier fallback model's ISSUES still surface as real findings —
-              # false negatives (missing a real bug) are worse than a spurious
-              # REQUEST_CHANGES. But its PASS is not trusted enough to justify
-              # auto-approving a PR the primary provider never actually reviewed —
-              # excluded from `verdicts` so it can't singlehandedly clear the gate
-              # to APPROVE below; a human still sees the fallback's write-up in the
-              # posted sections and can judge it themselves.
-              if not (used_fallback and verdict == "PASS"):
-                  verdicts.append(verdict)
-              # A shared fallback result is identical text for every provider that
-              # needed it — post the full write-up once, and a short pointer to it
-              # for anything after, instead of repeating the same review verbatim.
-              if used_fallback and shared_fallback['section_added']:
-                  sections.append(
-                      f"#### {section_label}\n\n"
-                      "_(same fallback result as the shared fallback section above)_"
-                  )
-              else:
-                  sections.append(f"#### {section_label}\n\n{review_text}")
-                  if used_fallback:
-                      shared_fallback['section_added'] = True
-
-          fallback_banner = ''
-          if fallback_events:
-              fallback_banner = (
-                  "> ⚠️ **A primary review provider failed and a fallback (free-tier "
-                  "OpenRouter model or local Ollama) stood in.** Its findings are "
-                  "shown below, but a fallback PASS is not trusted enough to "
-                  "auto-approve — treat this review as incomplete until the primary "
-                  "provider is confirmed working:\n"
-                  + '\n'.join(f"> - {e}" for e in fallback_events)
-                  + "\n\n"
-              )
-
-          if not verdicts:
-              # Reached either when every provider (including any fallback) failed
-              # outright, or when the only verdicts were fallback PASSes — a
-              # fallback PASS is deliberately excluded from `verdicts` above, so
-              # this path also covers "the only review we got isn't trustworthy
-              # enough to approve on its own." Carries the same diff-hash marker as
-              # a full review body (not just reviewed-sha) so a rerun in either
-              # case is treated consistently by extract_diff_hash's unchanged-diff
-              # skip check, instead of that marker only ever being present on
-              # successful runs.
+          if review_text is None:
+              # Carries the same diff-hash marker as a full review body (not just
+              # reviewed-sha) so a rerun after every tier fails is treated
+              # consistently by extract_diff_hash's unchanged-diff skip check,
+              # instead of that marker only ever being present on successful runs.
               neutral_body = (
                   f"## Code Review\n<!-- reviewed-sha: {head_sha} -->"
                   f"<!-- diff-hash: {diff_hash} -->\n\n"
-                  + fallback_banner
-                  + '\n\n---\n\n'.join(sections)
+                  "Every configured review tier failed:\n"
+                  + '\n'.join(f"- {a}" for a in attempts)
               )
               try:
                   post_review(neutral_body, "COMMENT")
@@ -1071,25 +992,41 @@ jobs:
                   print(f"Warning: could not post neutral comment: {post_err}")
               sys.exit(0)
 
-          has_must_fix = "ISSUES" in verdicts
-          event = "REQUEST_CHANGES" if has_must_fix else "APPROVE"
+          last_line = review_text.strip().splitlines()[-1].strip()
+          if last_line not in ("VERDICT: PASS", "VERDICT: ISSUES"):
+              print(f"Warning: {label} returned unexpected verdict line {last_line!r} — treating as ISSUES")
+              verdict = "ISSUES"
+          else:
+              verdict = last_line.removeprefix("VERDICT: ")
 
-          # Best-effort only: synthesizing a plain-language digest of the reviews
-          # above is a small enough prompt to be a good fit for CPU-only local
-          # Ollama, but it never gates the review — any failure (not self-hosted,
-          # Ollama down, model not pulled, timeout) just skips the TL;DR block.
-          if os.environ.get('RUNNER_ENVIRONMENT') == 'self-hosted' and len(verdicts) >= 2:
-              try:
-                  tldr_text, tldr_model = call_ollama_synthesis(sections)
-                  sections.insert(0, f"### TL;DR (local synthesis via Ollama, {tldr_model})\n\n{tldr_text}")
-              except Exception as e:
-                  print(f"Warning: Ollama synthesis skipped: {e}")
+          fallback_banner = ''
+          if not trusted:
+              # A free-tier/local fallback's ISSUES still surface as real
+              # findings — false negatives (missing a real bug) are worse than a
+              # spurious REQUEST_CHANGES. But its PASS is not trusted enough to
+              # justify auto-approving a PR no real provider ever reviewed — see
+              # the event decision below; a human still sees the write-up and
+              # can judge it themselves.
+              fallback_banner = (
+                  f"> ⚠️ **This review came from a lower-trust fallback tier ({label})"
+                  + (", after earlier tiers failed" if attempts else "")
+                  + ".** A fallback PASS is not treated as a clean approval — treat "
+                  "this review as informational until a primary provider is confirmed "
+                  "working"
+                  + (":\n" + '\n'.join(f"> - {a}" for a in attempts) if attempts else ".")
+                  + "\n\n"
+              )
+
+          if verdict == "PASS" and not trusted:
+              event = "COMMENT"
+          else:
+              event = "REQUEST_CHANGES" if verdict == "ISSUES" else "APPROVE"
 
           full_body = (
               f"## Code Review\n<!-- reviewed-sha: {head_sha} -->"
               f"<!-- diff-hash: {diff_hash} -->\n\n"
               + fallback_banner
-              + '\n\n---\n\n'.join(sections)
+              + f"#### {label}\n\n{review_text}"
           )
           try:
               post_review(full_body, event)
