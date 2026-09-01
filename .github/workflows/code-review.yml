@@ -23,12 +23,49 @@ permissions:
   actions: write
 
 jobs:
+  detect-runner:
+    name: Detect Runner
+    runs-on: ubuntu-slim
+    timeout-minutes: 2
+    outputs:
+      runner: ${{ steps.pick.outputs.runner }}
+    steps:
+      - name: Pick runner
+        id: pick
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
+          BASE_REPO: ${{ github.repository }}
+          DEFAULT_RUNNER: ${{ inputs.runner || '["self-hosted","linux","generic"]' }}
+        run: |
+          set -Eeuo pipefail
+          # See pr-check.yml's detect-runner for the full rationale: untrusted
+          # only when the PR comes from an actual fork, never for a branch
+          # pushed directly into this repo or a non-pull_request event.
+          # Secrets are already stripped by GitHub for fork-triggered
+          # pull_request runs regardless (configured_providers() below finds
+          # none and exits cleanly) — this guards the separate risk of PR-
+          # controlled code executing on self-hosted infrastructure at all.
+          untrusted_fork=false
+          if [[ "${EVENT_NAME}" == "pull_request" && "${HEAD_REPO}" != "${BASE_REPO}" ]]; then
+            untrusted_fork=true
+          fi
+          if [[ "${untrusted_fork}" == "true" ]]; then
+            echo 'runner=["ubuntu-slim"]' >> "$GITHUB_OUTPUT"
+          else
+            echo "runner=${DEFAULT_RUNNER}" >> "$GITHUB_OUTPUT"
+          fi
+
   review:
     name: AI Code Review
-    runs-on: ${{ fromJson(inputs.runner || '["self-hosted","linux","generic"]') }}
+    needs: detect-runner
+    runs-on: ${{ fromJson(needs.detect-runner.outputs.runner) }}
     if: |
-      (inputs.runner == null && github.event.pull_request.draft == false) ||
-      (inputs.runner != null && inputs.enabled == true)
+      needs.detect-runner.result == 'success' &&
+      (
+        (inputs.runner == null && github.event.pull_request.draft == false) ||
+        (inputs.runner != null && inputs.enabled == true)
+      )
     timeout-minutes: 10
     env:
       ANTHROPIC_VERSION: "1.2.0"
