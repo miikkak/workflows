@@ -40,25 +40,24 @@ jobs:
       - name: Pick runner
         id: pick
         env:
-          REPO_PRIVATE: ${{ github.event.repository.private }}
           EVENT_NAME: ${{ github.event_name }}
           HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
           BASE_REPO: ${{ github.repository }}
           DEFAULT_RUNNER: ${{ inputs.runner || '["self-hosted","linux","generic"]' }}
         run: |
           set -Eeuo pipefail
-          # Untrusted only when the base repo is genuinely public AND the PR
-          # comes from an actual fork (not a branch pushed directly into this
-          # repo by us, Renovate, or Dependabot) — route those to an
-          # ephemeral GitHub-hosted runner so arbitrary PR-controlled code
-          # never touches self-hosted infrastructure. Private repos can't
-          # receive fork PRs from anyone not already invited, so this is a
-          # no-op there; non-pull_request events (push, release, schedule)
-          # are always trusted since only someone with write access triggers
-          # them.
+          # Untrusted only when the PR comes from an actual fork (not a
+          # branch pushed directly into this repo by us, Renovate, or
+          # Dependabot) — route those to an ephemeral GitHub-hosted runner so
+          # arbitrary PR-controlled code never touches self-hosted
+          # infrastructure. Non-pull_request events (push, release,
+          # schedule) are always trusted since only someone with write
+          # access triggers them. Deliberately not gated on repo visibility:
+          # a currently-private repo can still gain an external collaborator
+          # with read access later, who could then fork and PR - fork-origin
+          # alone is the correct, durable signal.
           untrusted_fork=false
-          if [[ "${REPO_PRIVATE}" == "false" && "${EVENT_NAME}" == "pull_request" \
-                && "${HEAD_REPO}" != "${BASE_REPO}" ]]; then
+          if [[ "${EVENT_NAME}" == "pull_request" && "${HEAD_REPO}" != "${BASE_REPO}" ]]; then
             untrusted_fork=true
           fi
           if [[ "${untrusted_fork}" == "true" ]]; then
