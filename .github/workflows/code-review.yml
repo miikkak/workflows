@@ -142,6 +142,7 @@ jobs:
           import anthropic
           import openai
           from google import genai
+          from google.genai import errors as genai_errors
           from google.genai import types as genai_types
 
           DIFF_MAX_CHARS = 60_000
@@ -578,7 +579,11 @@ jobs:
               return content_blocks
 
           def call_anthropic(system_prompt, content_blocks):
-              client = anthropic.Anthropic(max_retries=3)
+              # Explicit timeout, not the SDK's 600s default: a stalled (not
+              # erroring) first-tier request could otherwise sit for most of
+              # the job's own 10-minute timeout before the fallback chain ever
+              # gets a turn, or before anything gets posted at all.
+              client = anthropic.Anthropic(timeout=60.0, max_retries=1)
               message = client.messages.create(
                   model="claude-sonnet-5",
                   max_tokens=4096,
@@ -604,7 +609,8 @@ jobs:
               return '\n\n'.join(b['text'] for b in content_blocks)
 
           def call_openai(system_prompt, content_blocks):
-              client = openai.OpenAI(max_retries=3)
+              # Same reasoning as call_anthropic's explicit timeout above.
+              client = openai.OpenAI(timeout=60.0, max_retries=1)
               response = client.chat.completions.create(
                   model="gpt-5",
                   messages=[
@@ -615,7 +621,12 @@ jobs:
               return response.choices[0].message.content
 
           def call_gemini(system_prompt, content_blocks):
-              client = genai.Client(api_key=os.environ['GEMINI_API_KEY'])
+              # Same reasoning as call_anthropic's explicit timeout above;
+              # HttpOptions.timeout is in milliseconds, not seconds.
+              client = genai.Client(
+                  api_key=os.environ['GEMINI_API_KEY'],
+                  http_options=genai_types.HttpOptions(timeout=60_000),
+              )
               response = client.models.generate_content(
                   model="gemini-3.1-pro-preview",
                   contents=_flatten_content_blocks(content_blocks),
@@ -775,7 +786,7 @@ jobs:
                   # transport exception instead — must be caught here too, or an
                   # outage on this one tier crashes the whole job before it ever
                   # gets to try the next one.
-                  'exceptions': (genai.errors.APIError, httpx.TransportError),
+                  'exceptions': (genai_errors.APIError, httpx.TransportError),
                   'trusted': True,
               },
               'nvidia': {
@@ -966,6 +977,17 @@ jobs:
           for key, tier in tier_candidates:
               try:
                   review_text, label = tier['call'](system_prompt, content_blocks)
+                  if not review_text or not review_text.strip():
+                      # A provider SDK call can return None/empty content without
+                      # raising (e.g. a safety refusal or a tool-call-only
+                      # response) — treat that as a failed attempt too, not a
+                      # success with nothing to show. Letting it through would
+                      # both skip every later tier and crash a few lines down on
+                      # review_text.strip().splitlines()[-1] against an empty list.
+                      print(f"Tier {key!r} returned empty content — trying next tier")
+                      attempts.append(f"{tier['label']} — empty response")
+                      review_text = None
+                      continue
                   trusted = tier['trusted']
                   print(f"Tier {key!r} succeeded ({label})")
                   break
@@ -977,13 +999,16 @@ jobs:
                   review_text = None
 
           if review_text is None:
-              # Carries the same diff-hash marker as a full review body (not just
-              # reviewed-sha) so a rerun after every tier fails is treated
-              # consistently by extract_diff_hash's unchanged-diff skip check,
-              # instead of that marker only ever being present on successful runs.
+              # Deliberately omits the reviewed-sha/diff-hash markers a real
+              # review body carries: this round produced no actual review, so a
+              # later trigger on the same commit (e.g. a manual re-run once a
+              # provider's outage clears) must be free to try the whole tier
+              # chain again rather than being skipped by extract_reviewed_sha's
+              # "HEAD already reviewed" check or extract_diff_hash's unchanged-
+              # diff check, either of which would otherwise treat this failure
+              # as a completed review forever.
               neutral_body = (
-                  f"## Code Review\n<!-- reviewed-sha: {head_sha} -->"
-                  f"<!-- diff-hash: {diff_hash} -->\n\n"
+                  "## Code Review\n\n"
                   "Every configured review tier failed:\n"
                   + '\n'.join(f"- {a}" for a in attempts)
               )
