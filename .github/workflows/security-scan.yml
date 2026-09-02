@@ -672,7 +672,16 @@ jobs:
           # All dependency-check jobs on this runner execute as the same
           # github-runner service account, so a fixed mode is sufficient -
           # this isn't shared across different runner users.
-          mkdir -p "$nvd_data_dir"
+          if ! mkdir -p "$nvd_data_dir" 2>/dev/null || [[ ! -w "$nvd_data_dir" ]]; then
+            # /srv isn't available or writable (GitHub-hosted runner, or a
+            # self-hosted runner without that persistent volume) - fall back
+            # to a per-job scratch dir. Every job then pays for a full cold
+            # sync instead of sharing the persistent NVD cache.
+            echo "::notice::${nvd_data_dir} not writable - using \$RUNNER_TEMP instead" \
+              "(no cross-run NVD cache persistence here)"
+            nvd_data_dir="$RUNNER_TEMP/dependency-check-data"
+            mkdir -p "$nvd_data_dir"
+          fi
           chmod 750 "$nvd_data_dir"
           # The shared database is a single H2 file; serialize access so concurrent
           # jobs on this runner (different repos, same schedule) don't corrupt it.
