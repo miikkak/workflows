@@ -129,6 +129,51 @@ jobs:
               return dockerfile.slice(0, insertAt) + `\n${text}` + dockerfile.slice(insertAt);
             };
 
+            // This workflow only knows how to force a package upgrade for
+            // Alpine base images (apk) - it's paired with dependency-check's
+            // alpine-security-updates check by default. Inserting `apk
+            // upgrade` into a Debian/Ubuntu/Fedora base image's Dockerfile
+            // would break the build rather than upgrade anything, so only do
+            // it when the last (actually-built) stage's base image is
+            // confirmed Alpine-based.
+
+            // A FROM line's image token can be preceded by `--platform=...`
+            // (or other future flags), so skip any leading `--flag` tokens
+            // rather than assuming the image is always the first word.
+            const resolveFromImageRef = (fromLine) => {
+              const tokens = fromLine.replace(/^FROM\s+/, '').split(/\s+/);
+              return tokens.find((t) => !t.startsWith('--')) || '';
+            };
+
+            // `FROM <stage-name>` can reference an earlier build stage by
+            // its `AS <name>` alias rather than a real image - collect
+            // those aliases so such a reference isn't misread as an image.
+            const stageAliases = new Set(
+              [...dockerfile.matchAll(/^FROM\s+.+\s+AS\s+(\S+)/gim)].map((m) => m[1].toLowerCase())
+            );
+
+            const lastFromImage = resolveFromImageRef(lastFrom[0]);
+
+            // Can't confirm the base image when it's an unresolved build
+            // ARG (e.g. `$TARGETPLATFORM`) or an internal stage alias -
+            // treat as non-Alpine (skip the apk line) rather than guess.
+            const isUnresolvableImageRef =
+              lastFromImage.includes('$') || stageAliases.has(lastFromImage.toLowerCase());
+
+            const isAlpineBase = !isUnresolvableImageRef && (() => {
+              // Match by the actual image-name/tag components (not a plain
+              // substring test) so e.g. "registry.example.com/team/not-alpine:1"
+              // isn't misclassified as Alpine.
+              const withoutDigest = lastFromImage.split('@')[0];
+              const slashIdx = withoutDigest.lastIndexOf('/');
+              const colonIdx = withoutDigest.lastIndexOf(':');
+              const hasTag = colonIdx > slashIdx;
+              const repo = hasTag ? withoutDigest.slice(0, colonIdx) : withoutDigest;
+              const tag = hasTag ? withoutDigest.slice(colonIdx + 1) : '';
+              const repoName = repo.slice(repo.lastIndexOf('/') + 1);
+              return repoName.toLowerCase() === 'alpine' || /(^|-)alpine/i.test(tag);
+            })();
+
             // apk add (without --upgrade) never touches an already-installed
             // package unless a new dependency forces it - most CVE fixes
             // land in packages baked into the base layer, not something the
@@ -139,7 +184,12 @@ jobs:
             // upgrading installed packages needs `apk upgrade` in the image.
             const upgradeLine = 'RUN apk upgrade --no-cache';
             let addedUpgradeLine = false;
-            if (!dockerfile.includes(upgradeLine)) {
+            if (!isAlpineBase) {
+              console.log(
+                `⚠️  Last FROM image "${lastFromImage}" could not be confirmed ` +
+                'Alpine-based - skipping apk upgrade insertion (marker-only PR).'
+              );
+            } else if (!dockerfile.includes(upgradeLine)) {
               dockerfile = insertAfterLastFrom(upgradeLine);
               addedUpgradeLine = true;
             }
@@ -186,24 +236,35 @@ jobs:
             const trackingIssue = openIssues.data.find(i => i.title === issueTitle);
 
             const prBody = [
-              '## Trigger Rebuild for Alpine Security Updates',
+              isAlpineBase
+                ? '## Trigger Rebuild for Alpine Security Updates'
+                : '## Trigger Image Rebuild (Cache-Busting Marker Only)',
               '',
-              'Alpine apk packages have security updates available in the live ' +
-                'mirror, even though the pinned base image digest has not changed.',
+              isAlpineBase
+                ? 'Alpine apk packages have security updates available in the live ' +
+                  'mirror, even though the pinned base image digest has not changed.'
+                : 'This rebuild was triggered by the dependency-check workflow, but ' +
+                  `the last stage's base image ("${lastFromImage}") could not be ` +
+                  'confirmed Alpine-based, so no package-manager upgrade command was ' +
+                  'inserted - only a cache-busting `LABEL` marker.',
               '',
-              '`apk add --no-cache` fetches from the live mirror at build time, ' +
-                'but never upgrades an already-installed package unless a new ' +
-                'dependency forces it - most fixes land in packages baked into ' +
-                'the base layer, not something explicitly `apk add`ed here. ' +
-                (addedUpgradeLine
-                  ? `This PR adds \`${upgradeLine}\` right after \`FROM\` so ` +
-                    'the rebuild actually applies pending updates, plus a ' +
-                    'no-op `LABEL` marker to bust the build cache on this ' +
-                    'and future dispatches.'
-                  : `\`${upgradeLine}\` is already present; this PR only ` +
-                    'updates the `LABEL` marker to bust the build cache so ' +
-                    'the next build re-fetches the apk index.'),
-              '',
+              ...(isAlpineBase
+                ? [
+                    '`apk add --no-cache` fetches from the live mirror at build time, ' +
+                      'but never upgrades an already-installed package unless a new ' +
+                      'dependency forces it - most fixes land in packages baked into ' +
+                      'the base layer, not something explicitly `apk add`ed here. ' +
+                      (addedUpgradeLine
+                        ? `This PR adds \`${upgradeLine}\` right after \`FROM\` so ` +
+                          'the rebuild actually applies pending updates, plus a ' +
+                          'no-op `LABEL` marker to bust the build cache on this ' +
+                          'and future dispatches.'
+                        : `\`${upgradeLine}\` is already present; this PR only ` +
+                          'updates the `LABEL` marker to bust the build cache so ' +
+                          'the next build re-fetches the apk index.'),
+                    '',
+                  ]
+                : []),
               ...(trackingIssue ? [`Closes #${trackingIssue.number}`, ''] : []),
               '### Testing',
               '',
@@ -216,7 +277,9 @@ jobs:
             const { data: pr } = await github.rest.pulls.create({
               owner: context.repo.owner,
               repo: context.repo.repo,
-              title: 'chore: rebuild image to pick up Alpine security updates',
+              title: isAlpineBase
+                ? 'chore: rebuild image to pick up Alpine security updates'
+                : 'chore: rebuild image (cache-busting marker only)',
               head: branchName,
               base: defaultBranch,
               body: prBody,
