@@ -70,20 +70,37 @@ jobs:
           RELEASE_LABELS = {'release:major', 'release:minor', 'release:patch', 'release:none'}
 
 
+          def strip_comment(line):
+              """Strip a trailing # comment, respecting quoted strings."""
+              in_single = False
+              in_double = False
+              for i, ch in enumerate(line):
+                  if ch == "'" and not in_double:
+                      in_single = not in_single
+                  elif ch == '"' and not in_single:
+                      in_double = not in_double
+                  elif ch == '#' and not in_single and not in_double:
+                      return line[:i]
+              return line
+
+
           def parse_config(text):
               """Parse the subset of YAML used in label-check.yml without external deps."""
               result = {}
               current_list_key = None
-              for line in text.splitlines():
+              for raw_line in text.splitlines():
+                  line = strip_comment(raw_line).rstrip()
                   stripped = line.strip()
-                  if not stripped or stripped.startswith('#'):
+                  if not stripped:
                       continue
-                  if line.startswith('  - '):
+                  lstripped = line.lstrip()
+                  if lstripped.startswith('- '):
                       if current_list_key is not None:
                           result.setdefault(current_list_key, []).append(
-                              stripped[2:].strip().strip('\'"')
+                              lstripped[2:].strip().strip('\'"')
                           )
-                  elif ': ' in stripped or stripped.endswith(':'):
+                      continue
+                  if ': ' in stripped or stripped.endswith(':'):
                       current_list_key = None
                       if ': ' in stripped:
                           key, _, val = stripped.partition(': ')
