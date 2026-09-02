@@ -287,9 +287,9 @@ jobs:
         with:
           repository: miikkak/workflows
           ref: ${{ steps.tooling_ref.outputs.ref }}
-          # miikkak/workflows is private: the default GITHUB_TOKEN is scoped
-          # to the consumer repo only and can't read a different private
-          # repo, so this needs the same cross-repo PAT already used above.
+          # The default GITHUB_TOKEN is scoped to the consumer repo only and
+          # can't read a different repo regardless of visibility, so this
+          # needs the same cross-repo PAT already used above.
           token: ${{ secrets.SEMANTIC_RELEASE_TOKEN }}
           sparse-checkout: |
             package.json
