@@ -71,16 +71,54 @@ jobs:
 
 
           def strip_comment(line):
-              """Strip a trailing # comment, respecting quoted strings."""
-              in_single = False
-              in_double = False
-              for i, ch in enumerate(line):
-                  if ch == "'" and not in_double:
-                      in_single = not in_single
-                  elif ch == '"' and not in_single:
-                      in_double = not in_double
-                  elif ch == '#' and not in_single and not in_double:
+              """Strip a trailing # comment, respecting YAML quoting rules.
+
+              A ' or " only opens a quoted scalar when it's the first
+              character of a value (right after "- " or "key: ", or at the
+              start of the line) - matching real YAML, where an apostrophe
+              inside an unquoted scalar (e.g. O'Reilly/**) is just a literal
+              character, not a quote delimiter. Once inside a quote, '' is
+              an escaped literal apostrophe (single-quoted) and \\" is an
+              escaped literal quote (double-quoted); a # in either case is
+              literal, not a comment marker.
+              """
+              quote = None
+              value_start = True
+              i = 0
+              n = len(line)
+              while i < n:
+                  ch = line[i]
+                  if quote:
+                      if quote == '"' and ch == '\\' and i + 1 < n:
+                          i += 2
+                          continue
+                      if ch == quote:
+                          if quote == "'" and i + 1 < n and line[i + 1] == "'":
+                              i += 2
+                              continue
+                          quote = None
+                      i += 1
+                      continue
+                  if ch in ' \t':
+                      i += 1
+                      continue
+                  if value_start and ch in ("'", '"'):
+                      quote = ch
+                      value_start = False
+                      i += 1
+                      continue
+                  if ch == '#':
                       return line[:i]
+                  if ch == '-' and line[i:i + 2] == '- ':
+                      value_start = True
+                      i += 2
+                      continue
+                  if ch == ':' and line[i:i + 2] == ': ':
+                      value_start = True
+                      i += 2
+                      continue
+                  value_start = False
+                  i += 1
               return line
 
 
