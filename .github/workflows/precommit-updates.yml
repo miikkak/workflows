@@ -20,6 +20,10 @@ on: # yamllint disable-line rule:truthy
         description: Install hadolint before running pre-commit (needed for repos with Dockerfiles)
         type: boolean
         default: false
+      default-branch:
+        description: Branch to base the update PR on
+        type: string
+        default: main
 
 concurrency:
   group: precommit-updates
@@ -102,11 +106,14 @@ jobs:
       - name: Create PR with updates
         if: steps.check.outputs.updates_available == 'true'
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9
+        env:
+          DEFAULT_BRANCH: ${{ inputs.default-branch || 'main' }}
         with:
           github-token: ${{ secrets.PULL_REQUEST_TOKEN || github.token }}
           script: |
             const fs = require('fs');
             const { execSync } = require('child_process');
+            const defaultBranch = process.env.DEFAULT_BRANCH;
 
             const prs = await github.rest.pulls.list({
               owner: context.repo.owner,
@@ -126,7 +133,7 @@ jobs:
               const { data: ref } = await github.rest.git.getRef({
                 owner: context.repo.owner,
                 repo: context.repo.repo,
-                ref: 'heads/main'
+                ref: `heads/${defaultBranch}`
               });
 
               // Delete the branch if it already exists (e.g. from a previous failed run)
@@ -179,7 +186,7 @@ jobs:
                 repo: context.repo.repo,
                 title: 'chore: update pre-commit hook versions',
                 head: branchName,
-                base: 'main',
+                base: defaultBranch,
                 body: [
                   '## Update Pre-commit Hooks',
                   '',

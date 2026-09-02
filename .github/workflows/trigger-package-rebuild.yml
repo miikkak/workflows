@@ -22,6 +22,11 @@ name: Trigger Package Rebuild
           config. Defaults to `Dockerfile` at the repo root.
         required: false
         type: string
+      default-branch:
+        description: Branch to branch the rebuild PR from and target
+        required: false
+        type: string
+        default: main
     secrets:
       pull-request-token:
         description: >-
@@ -49,11 +54,13 @@ jobs:
         env:
           CHECK_NAME: ${{ inputs.check-name }}
           DOCKERFILE_PATH: ${{ inputs.dockerfile-path }}
+          DEFAULT_BRANCH: ${{ inputs.default-branch }}
         with:
           github-token: ${{ secrets.pull-request-token }}
           script: |
             const checkName = process.env.CHECK_NAME || 'alpine-security-updates';
             const dockerfilePath = process.env.DOCKERFILE_PATH || 'Dockerfile';
+            const defaultBranch = process.env.DEFAULT_BRANCH;
             const branchName = 'auto-update/trigger-package-rebuild';
 
             // Avoid piling up duplicate PRs on repeated dispatches
@@ -72,7 +79,7 @@ jobs:
             const { data: ref } = await github.rest.git.getRef({
               owner: context.repo.owner,
               repo: context.repo.repo,
-              ref: 'heads/main',
+              ref: `heads/${defaultBranch}`,
             });
 
             try {
@@ -274,7 +281,7 @@ jobs:
                 ? 'chore: rebuild image to pick up Alpine security updates'
                 : 'chore: rebuild image (cache-busting marker only)',
               head: branchName,
-              base: 'main',
+              base: defaultBranch,
               body: prBody,
             });
 
