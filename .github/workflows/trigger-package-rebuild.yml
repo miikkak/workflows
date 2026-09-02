@@ -164,7 +164,7 @@ jobs:
               const repo = hasTag ? withoutDigest.slice(0, colonIdx) : withoutDigest;
               const tag = hasTag ? withoutDigest.slice(colonIdx + 1) : '';
               const repoName = repo.slice(repo.lastIndexOf('/') + 1);
-              return repoName.toLowerCase() === 'alpine' || /(^|-)alpine(-|$)/i.test(tag);
+              return repoName.toLowerCase() === 'alpine' || /(^|-)alpine/i.test(tag);
             })();
 
             // apk add (without --upgrade) never touches an already-installed
