@@ -119,9 +119,8 @@ jobs:
               state: 'open'
             });
 
-            const existingIssue = issues.data.find(issue =>
-              issue.title.includes('Security vulnerabilities detected')
-            );
+            const issueTitle = '🔒 Security vulnerabilities detected (filesystem scan)';
+            const existingIssue = issues.data.find(issue => issue.title === issueTitle);
 
             const repoBase = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}`;
             const runUrl = `${repoBase}/actions/runs/${context.runId}`;
@@ -164,7 +163,7 @@ jobs:
               const newIssue = await github.rest.issues.create({
                 owner: context.repo.owner,
                 repo: context.repo.repo,
-                title: '🔒 Security vulnerabilities detected',
+                title: issueTitle,
                 body: body,
                 labels: ['security', 'automated', 'bug']
               });
@@ -333,9 +332,8 @@ jobs:
               state: 'open'
             });
 
-            const existingIssue = issues.data.find(issue =>
-              issue.title.includes('Security vulnerabilities detected')
-            );
+            const issueTitle = '🔒 Security vulnerabilities detected (container scan)';
+            const existingIssue = issues.data.find(issue => issue.title === issueTitle);
 
             const containerRepoBase = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}`;
             const containerRunUrl = `${containerRepoBase}/actions/runs/${context.runId}`;
@@ -379,7 +377,7 @@ jobs:
               const newIssue = await github.rest.issues.create({
                 owner: context.repo.owner,
                 repo: context.repo.repo,
-                title: '🔒 Security vulnerabilities detected in container',
+                title: issueTitle,
                 body: body,
                 labels: ['security', 'automated', 'bug']
               });
@@ -509,9 +507,8 @@ jobs:
               state: 'open'
             });
 
-            const existingIssue = issues.data.find(issue =>
-              issue.title.includes('Security vulnerabilities detected')
-            );
+            const issueTitle = '🔒 Security vulnerabilities detected (govulncheck)';
+            const existingIssue = issues.data.find(issue => issue.title === issueTitle);
 
             const repoBase = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}`;
             const runUrl = `${repoBase}/actions/runs/${context.runId}`;
@@ -573,7 +570,7 @@ jobs:
               const newIssue = await github.rest.issues.create({
                 owner: context.repo.owner,
                 repo: context.repo.repo,
-                title: '🔒 Security vulnerabilities detected',
+                title: issueTitle,
                 body: body,
                 labels: ['security', 'automated', 'bug']
               });
@@ -672,7 +669,16 @@ jobs:
           # All dependency-check jobs on this runner execute as the same
           # github-runner service account, so a fixed mode is sufficient -
           # this isn't shared across different runner users.
-          mkdir -p "$nvd_data_dir"
+          if ! mkdir -p "$nvd_data_dir" 2>/dev/null || [[ ! -w "$nvd_data_dir" || ! -x "$nvd_data_dir" ]]; then
+            # /srv isn't available, writable, or searchable (GitHub-hosted
+            # runner, or a self-hosted runner without that persistent
+            # volume) - fall back to a per-job scratch dir. Every job then
+            # pays for a full cold sync instead of sharing the persistent
+            # NVD cache.
+            printf '::notice::%s not writable - using RUNNER_TEMP instead\n' "$nvd_data_dir"
+            nvd_data_dir="$RUNNER_TEMP/dependency-check-data"
+            mkdir -p "$nvd_data_dir"
+          fi
           chmod 750 "$nvd_data_dir"
           # The shared database is a single H2 file; serialize access so concurrent
           # jobs on this runner (different repos, same schedule) don't corrupt it.
@@ -756,9 +762,8 @@ jobs:
               state: 'open'
             });
 
-            const existingIssue = issues.data.find(issue =>
-              issue.title.includes('Security vulnerabilities detected')
-            );
+            const issueTitle = '🔒 Security vulnerabilities detected (dependency-check)';
+            const existingIssue = issues.data.find(issue => issue.title === issueTitle);
 
             const repoBase = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}`;
             const runUrl = `${repoBase}/actions/runs/${context.runId}`;
@@ -805,7 +810,7 @@ jobs:
               const newIssue = await github.rest.issues.create({
                 owner: context.repo.owner,
                 repo: context.repo.repo,
-                title: '🔒 Security vulnerabilities detected',
+                title: issueTitle,
                 body: body,
                 labels: ['security', 'automated', 'bug']
               });
