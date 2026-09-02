@@ -64,10 +64,12 @@ When consuming these workflows:
   actually declares needing - don't blanket-grant `secrets: inherit` if a narrower pass-through
   works for your use case
 - `permissions:` work differently from `secrets:` - a called workflow can never get _more_
-  permission than your own wrapper workflow's top-level `permissions:` block grants, regardless
-  of what the called workflow requests at the job level. If a workflow's job needs e.g.
-  `contents: write` (like `ci-cd.yml`'s conditional `verify-release-notes` job does), your
-  wrapper's top-level `permissions:` needs to grant at least that, or the job silently gets
+  permission than the effective `GITHUB_TOKEN` permissions of the job that calls it, regardless
+  of what the called workflow requests internally. If a workflow's job needs e.g.
+  `contents: write` (like `ci-cd.yml`'s conditional `verify-release-notes` job does), grant it on
+  `jobs.<job_id>.permissions` for the specific job that has `uses:` - a supported keyword
+  alongside `uses:` - rather than your whole wrapper's top-level `permissions:`, so unrelated
+  jobs in the same file don't get the elevated access too. Without it, the job silently gets
   capped down and fails - check the called workflow's own comments for job-level permission
   requirements, not just its `secrets:` block
 - Review a workflow's diff before bumping its pinned SHA, the same way you would for any other
