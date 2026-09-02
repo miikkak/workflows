@@ -63,6 +63,13 @@ When consuming these workflows:
 - Grant only the `secrets`/`permissions` a given workflow's own `inputs:`/`secrets:` block
   actually declares needing - don't blanket-grant `secrets: inherit` if a narrower pass-through
   works for your use case
+- `permissions:` work differently from `secrets:` - a called workflow can never get _more_
+  permission than your own wrapper workflow's top-level `permissions:` block grants, regardless
+  of what the called workflow requests at the job level. If a workflow's job needs e.g.
+  `contents: write` (like `ci-cd.yml`'s conditional `verify-release-notes` job does), your
+  wrapper's top-level `permissions:` needs to grant at least that, or the job silently gets
+  capped down and fails - check the called workflow's own comments for job-level permission
+  requirements, not just its `secrets:` block
 - Review a workflow's diff before bumping its pinned SHA, the same way you would for any other
   third-party Action
 

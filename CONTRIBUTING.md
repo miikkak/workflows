@@ -116,9 +116,12 @@ Examples:
 There's no traditional test suite - workflow correctness is validated by:
 
 ```bash
-actionlint
-shellcheck .github/workflows/*.yml  # via the shellcheck-wrapper, extracts embedded `run:` blocks
+actionlint -shellcheck .github/shellcheck-wrapper
 ```
+
+The wrapper works around a version incompatibility between `actionlint`'s shellcheck invocation
+syntax and modern `shellcheck` releases (see the comment at the top of the wrapper script) - it's
+not something you invoke directly.
 
 Since these are reusable workflows, the most meaningful test is often exercising the change from
 an actual consumer repo's PR before merging.

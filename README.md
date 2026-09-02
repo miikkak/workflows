@@ -24,14 +24,20 @@ Every workflow below is called like:
 ```yaml
 jobs:
   ci:
-    uses: miikkak/workflows/.github/workflows/ci-cd.yml@<pinned-sha> # or @main
-    secrets: inherit
+    uses: miikkak/workflows/.github/workflows/ci-cd.yml@<pinned-sha>
     with:
       # inputs specific to that workflow - see its own `inputs:` block
 ```
 
 Pin to a commit SHA (not a floating tag) in your own repo's workflow files - Renovate can keep
 that pin current for you (see [`renovate-config`](https://github.com/miikkak/renovate-config)).
+`@main` also works, but only pin to it for local testing of an unreleased change; never leave a
+consumer repo tracking it.
+
+Only add a `secrets:` block if the workflow you're calling actually declares one in its own
+`workflow_call.secrets` (most don't) - grant just the named secret it asks for, e.g.
+`secrets: { PULL_REQUEST_TOKEN: ${{ secrets.PULL_REQUEST_TOKEN }} }`, rather than a blanket
+`secrets: inherit` that hands it every secret your repo has.
 
 ## Reusable workflows
 
