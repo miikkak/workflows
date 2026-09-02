@@ -4,6 +4,10 @@ name: Validate Tag
 on: # yamllint disable-line rule:truthy
   workflow_call:
     inputs:
+      runner:
+        description: Runner labels as a JSON array string (e.g. '["self-hosted","linux","generic"]')
+        type: string
+        default: '["self-hosted","linux","generic"]'
       tag:
         description: "Tag to validate (from workflow_dispatch input); skipped when empty"
         required: false
@@ -33,7 +37,7 @@ permissions:
 jobs:
   validate-tag-input:
     name: Validate Tag Input
-    runs-on: [self-hosted, linux, generic]
+    runs-on: ${{ fromJson(inputs.runner || '["self-hosted","linux","generic"]') }}
     timeout-minutes: 5
     if: inputs.tag != ''
     steps:
