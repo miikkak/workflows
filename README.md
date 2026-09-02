@@ -62,9 +62,13 @@ Only add a `secrets:` block if the workflow you're calling actually declares one
 | `validate-tag.yml`            | Validates a manually-pushed tag matches the expected format before release          |
 | `sync-to-server-config.yml`   | Mirrors specific files from a source repo into my private `server-config` repo      |
 
-`self-ci.yml`, `self-cd.yml`, `self-release.yml`, and `self-verify-toolchains.yml` are this
-repo's _own_ CI/CD (they run directly on pushes/PRs to this repo, they aren't meant to be
-`uses:`-called from elsewhere) - included for transparency, not for external consumption.
+`self-ci.yml` and `self-verify-toolchains.yml` are this repo's _own_ CI (they run directly on
+pushes/PRs to this repo, they aren't meant to be `uses:`-called from elsewhere) - included for
+transparency, not for external consumption. This repo deliberately doesn't tag or publish
+releases of itself - consumers pin to a commit SHA (see above), not a version tag, so a
+self-referential release/tarball would have no consumer and nothing to attach beyond the repo's
+own config files (`.github/` itself, the actually useful part, would have to be excluded from
+any such tarball to avoid duplicating what git already gives you).
 
 ## Design notes
 
