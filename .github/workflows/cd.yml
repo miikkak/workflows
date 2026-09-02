@@ -38,6 +38,10 @@ on: # yamllint disable-line rule:truthy
         description: Set up Docker Buildx before running tests (container repos)
         type: boolean
         default: false
+      default-branch:
+        description: Branch this pipeline releases from
+        type: string
+        default: main
     secrets:
       SEMANTIC_RELEASE_TOKEN:
         description: >-
@@ -191,7 +195,7 @@ jobs:
       always() &&
       needs.check-trigger.result == 'success' &&
       (needs.test.result == 'success' || needs.test.result == 'skipped') &&
-      github.ref == 'refs/heads/main'
+      github.ref == format('refs/heads/{0}', inputs.default-branch)
 
     steps:
       - name: Checkout code
