@@ -60,7 +60,7 @@ jobs:
           script: |
             const checkName = process.env.CHECK_NAME || 'alpine-security-updates';
             const dockerfilePath = process.env.DOCKERFILE_PATH || 'Dockerfile';
-            const defaultBranch = process.env.DEFAULT_BRANCH || 'main';
+            const defaultBranch = process.env.DEFAULT_BRANCH;
             const branchName = 'auto-update/trigger-package-rebuild';
 
             // Avoid piling up duplicate PRs on repeated dispatches

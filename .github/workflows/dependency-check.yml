@@ -578,6 +578,10 @@ jobs:
               if (checkFile) {
                 inputs['dockerfile-path'] = checkFile;
               }
+              // Forward this call's configured default branch so the
+              // dispatched rebuild PR targets the same branch, not
+              // whatever default the target workflow declares on its own.
+              inputs['default-branch'] = defaultBranch;
             }
 
             console.log(`🤖 Dispatching ${workflowId} with ${JSON.stringify(inputs)}`);
