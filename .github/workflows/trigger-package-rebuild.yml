@@ -122,6 +122,16 @@ jobs:
               return dockerfile.slice(0, insertAt) + `\n${text}` + dockerfile.slice(insertAt);
             };
 
+            // This workflow only knows how to force a package upgrade for
+            // Alpine base images (apk) - it's paired with dependency-check's
+            // alpine-security-updates check by default. Inserting `apk
+            // upgrade` into a Debian/Ubuntu/Fedora base image's Dockerfile
+            // would break the build rather than upgrade anything, so only do
+            // it when the last (actually-built) stage's base image looks
+            // Alpine-based.
+            const lastFromImage = lastFrom[0].replace(/^FROM\s+/, '').split(/\s+/)[0];
+            const isAlpineBase = /alpine/i.test(lastFromImage);
+
             // apk add (without --upgrade) never touches an already-installed
             // package unless a new dependency forces it - most CVE fixes
             // land in packages baked into the base layer, not something the
@@ -132,7 +142,12 @@ jobs:
             // upgrading installed packages needs `apk upgrade` in the image.
             const upgradeLine = 'RUN apk upgrade --no-cache';
             let addedUpgradeLine = false;
-            if (!dockerfile.includes(upgradeLine)) {
+            if (!isAlpineBase) {
+              console.log(
+                `⚠️  Last FROM image "${lastFromImage}" doesn't look Alpine-based - ` +
+                'skipping apk upgrade insertion (marker-only PR).'
+              );
+            } else if (!dockerfile.includes(upgradeLine)) {
               dockerfile = insertAfterLastFrom(upgradeLine);
               addedUpgradeLine = true;
             }
@@ -193,9 +208,14 @@ jobs:
                     'the rebuild actually applies pending updates, plus a ' +
                     'no-op `LABEL` marker to bust the build cache on this ' +
                     'and future dispatches.'
-                  : `\`${upgradeLine}\` is already present; this PR only ` +
+                  : isAlpineBase
+                  ? `\`${upgradeLine}\` is already present; this PR only ` +
                     'updates the `LABEL` marker to bust the build cache so ' +
-                    'the next build re-fetches the apk index.'),
+                    'the next build re-fetches the apk index.'
+                  : `The last stage's base image ("${lastFromImage}") ` +
+                    `doesn't look Alpine-based, so \`${upgradeLine}\` was ` +
+                    'not inserted; this PR only updates the `LABEL` marker ' +
+                    'to bust the build cache.'),
               '',
               ...(trackingIssue ? [`Closes #${trackingIssue.number}`, ''] : []),
               '### Testing',
