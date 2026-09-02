@@ -70,20 +70,75 @@ jobs:
           RELEASE_LABELS = {'release:major', 'release:minor', 'release:patch', 'release:none'}
 
 
+          def strip_comment(line):
+              """Strip a trailing # comment, respecting YAML quoting rules.
+
+              A ' or " only opens a quoted scalar when it's the first
+              character of a value (right after "- " or "key: ", or at the
+              start of the line) - matching real YAML, where an apostrophe
+              inside an unquoted scalar (e.g. O'Reilly/**) is just a literal
+              character, not a quote delimiter. Once inside a quote, '' is
+              an escaped literal apostrophe (single-quoted) and \\" is an
+              escaped literal quote (double-quoted); a # in either case is
+              literal, not a comment marker.
+              """
+              quote = None
+              value_start = True
+              i = 0
+              n = len(line)
+              while i < n:
+                  ch = line[i]
+                  if quote:
+                      if quote == '"' and ch == '\\' and i + 1 < n:
+                          i += 2
+                          continue
+                      if ch == quote:
+                          if quote == "'" and i + 1 < n and line[i + 1] == "'":
+                              i += 2
+                              continue
+                          quote = None
+                      i += 1
+                      continue
+                  if ch in ' \t':
+                      i += 1
+                      continue
+                  if value_start and ch in ("'", '"'):
+                      quote = ch
+                      value_start = False
+                      i += 1
+                      continue
+                  if ch == '#':
+                      return line[:i]
+                  if ch == '-' and line[i:i + 2] == '- ':
+                      value_start = True
+                      i += 2
+                      continue
+                  if ch == ':' and line[i:i + 2] == ': ':
+                      value_start = True
+                      i += 2
+                      continue
+                  value_start = False
+                  i += 1
+              return line
+
+
           def parse_config(text):
               """Parse the subset of YAML used in label-check.yml without external deps."""
               result = {}
               current_list_key = None
-              for line in text.splitlines():
+              for raw_line in text.splitlines():
+                  line = strip_comment(raw_line).rstrip()
                   stripped = line.strip()
-                  if not stripped or stripped.startswith('#'):
+                  if not stripped:
                       continue
-                  if line.startswith('  - '):
+                  lstripped = line.lstrip()
+                  if lstripped.startswith('- '):
                       if current_list_key is not None:
                           result.setdefault(current_list_key, []).append(
-                              stripped[2:].strip().strip('\'"')
+                              lstripped[2:].strip().strip('\'"')
                           )
-                  elif ': ' in stripped or stripped.endswith(':'):
+                      continue
+                  if ': ' in stripped or stripped.endswith(':'):
                       current_list_key = None
                       if ': ' in stripped:
                           key, _, val = stripped.partition(': ')

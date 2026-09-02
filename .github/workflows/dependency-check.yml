@@ -21,6 +21,10 @@ on: # yamllint disable-line rule:truthy
         required: false
         type: boolean
         default: false
+      default-branch:
+        description: Branch to dispatch auto-update workflows against
+        type: string
+        default: main
     secrets:
       pull-request-token:
         description: >-
@@ -545,6 +549,7 @@ jobs:
           CHECK_NAME: ${{ matrix.name }}
           CHECK_FILE: ${{ matrix.file }}
           DISPATCH_VALUE: ${{ steps.result.outputs.dispatch-value }}
+          DEFAULT_BRANCH: ${{ inputs.default-branch }}
         with:
           script: |
             const workflowId = process.env.AUTO_UPDATE_WORKFLOW;
@@ -552,6 +557,7 @@ jobs:
             const checkName = process.env.CHECK_NAME;
             const checkFile = process.env.CHECK_FILE;
             const dispatchValue = process.env.DISPATCH_VALUE;
+            const defaultBranch = process.env.DEFAULT_BRANCH;
 
             // Determine input key: explicit override, or type-based default
             let inputKey = process.env.AUTO_UPDATE_INPUT;
@@ -572,6 +578,10 @@ jobs:
               if (checkFile) {
                 inputs['dockerfile-path'] = checkFile;
               }
+              // Forward this call's configured default branch so the
+              // dispatched rebuild PR targets the same branch, not
+              // whatever default the target workflow declares on its own.
+              inputs['default-branch'] = defaultBranch;
             }
 
             console.log(`🤖 Dispatching ${workflowId} with ${JSON.stringify(inputs)}`);
@@ -581,7 +591,7 @@ jobs:
                 owner: context.repo.owner,
                 repo: context.repo.repo,
                 workflow_id: workflowId,
-                ref: 'main',
+                ref: defaultBranch,
                 inputs,
               });
               console.log('✅ Auto-update workflow dispatched successfully');

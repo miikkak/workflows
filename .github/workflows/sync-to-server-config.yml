@@ -137,12 +137,17 @@ jobs:
             echo "No merged PR found for commit ${SOURCE_SHA}"
           fi
 
+          # Randomize the heredoc delimiter so a PR body that happens to
+          # contain a fixed literal (e.g. "__EOF__") can't inject extra
+          # GITHUB_OUTPUT keys. Avoids a uuidgen dependency by mixing in the
+          # run ID/attempt (unique per workflow run) and $RANDOM.
+          DELIMITER="EOF_${GITHUB_RUN_ID}_${GITHUB_RUN_ATTEMPT}_${RANDOM}"
           {
             echo "pr_number=${PR_NUMBER}"
             echo "pr_title=${PR_TITLE}"
-            echo "pr_body<<__EOF__"
+            echo "pr_body<<${DELIMITER}"
             echo "${PR_BODY}"
-            echo "__EOF__"
+            echo "${DELIMITER}"
           } >> "$GITHUB_OUTPUT"
 
       - name: Commit and open or update PR
