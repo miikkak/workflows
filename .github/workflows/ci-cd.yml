@@ -70,13 +70,14 @@ permissions:
 # Caller permission requirement: the verify-release-notes job below requests
 # `permissions: contents: write` at the job level (see the comment on that
 # job for why). GitHub Actions never lets a called reusable workflow escalate
-# permissions beyond what the top-level caller granted - if your own
-# `.github/workflows/ci-cd.yml` wrapper sets `permissions: contents: read`
-# (the minimum this file otherwise needs), that job's write request gets
-# capped down to read and its dry-run push probe fails. Either grant
-# `contents: write` at the top level of your wrapper, or drop
-# has-local-release-tooling detection for your repo if you don't use
-# semantic-release.
+# permissions beyond what the caller granted - if your wrapper's job calling
+# this file only has `contents: read` (the minimum this file otherwise
+# needs), that job's write request gets capped down to read and its dry-run
+# push probe fails. Grant `contents: write` either at the top level of your
+# wrapper, or (narrower - job-level permissions override workflow-level for
+# that job) on `jobs.<job_id>.permissions` for just the job with `uses:`
+# calling this file - or drop has-local-release-tooling detection for your
+# repo if you don't use semantic-release.
 # ==============================================================================
 
 jobs:
