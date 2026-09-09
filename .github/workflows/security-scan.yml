@@ -406,7 +406,7 @@ jobs:
       issues: write
 
     env:
-      GOVULNCHECK_VERSION: "v1.7.0"
+      GOVULNCHECK_VERSION: "v1.8.0"
 
     steps:
       - name: Checkout code
