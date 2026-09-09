@@ -1,0 +1,30 @@
+---
+name: Dependabot Automerge (self)
+
+# This repo defines dependabot-automerge.yml as a reusable workflow_call
+# for consumer repos — it can't also own the `pull_request` trigger
+# without a naming clash. This wrapper is the equivalent of every
+# consumer repo's own dependabot-automerge.yml, calling the shared
+# definition via a relative path (see self-ci.yml -> ci-cd.yml for the
+# same pattern).
+#
+# This repo's regular dependency updates come from Renovate, which
+# already gets a release label via the shared renovate-config preset.
+# Dependabot only opens PRs here through GitHub's native "Dependabot
+# security updates" (no .github/dependabot.yml exists), so without this
+# wrapper those PRs sit without a release label or auto-merge forever.
+
+on: # yamllint disable-line rule:truthy
+  pull_request:
+    types: [opened, reopened, synchronize]
+    branches: [main]
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  automerge:
+    if: github.actor == 'dependabot[bot]'
+    name: Dependabot Automerge
+    uses: ./.github/workflows/dependabot-automerge.yml
