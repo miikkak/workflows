@@ -1,0 +1,88 @@
+---
+name: Resolve image
+description: >-
+  Resolve a full image reference (static or derived from a Dockerfile ARG)
+  and, if one is pinned, the digest from its FROM line. Shared by the
+  docker-digest and apk-security-updates dependency-check handlers.
+
+inputs:
+  image:
+    description: Static full image reference (e.g. alpine:3.24). Mutually exclusive with image-arg/image-prefix.
+    required: false
+  image-arg:
+    description: Name of the Dockerfile ARG holding the version (used with image-prefix).
+    required: false
+  image-prefix:
+    description: Image reference prefix to combine with the resolved ARG version (used with image-arg).
+    required: false
+  file:
+    description: Path to the Dockerfile to read the ARG and pinned digest from.
+    required: true
+
+outputs:
+  full-image:
+    description: Resolved image reference without digest (e.g. alpine:3.24).
+    value: ${{ steps.resolve.outputs.full-image }}
+  digest:
+    description: Digest pinned in the FROM line for full-image, empty if none is pinned.
+    value: ${{ steps.resolve.outputs.digest }}
+  pinned-image:
+    description: full-image@digest if a digest is pinned, otherwise full-image.
+    value: ${{ steps.resolve.outputs.pinned-image }}
+
+runs:
+  using: composite
+  steps:
+    - name: Resolve image and pinned digest
+      id: resolve
+      shell: bash
+      env:
+        IMAGE: ${{ inputs.image }}
+        IMAGE_ARG: ${{ inputs.image-arg }}
+        IMAGE_PREFIX: ${{ inputs.image-prefix }}
+        FILE: ${{ inputs.file }}
+      run: |
+        set -Eeuo pipefail
+
+        if [[ -n "${IMAGE:-}" ]]; then
+          FULL_IMAGE="$IMAGE"
+        elif [[ -n "${IMAGE_ARG:-}" && -n "${IMAGE_PREFIX:-}" ]]; then
+          VERSION=$(grep -Fm1 "ARG ${IMAGE_ARG}=" "$FILE" | cut -d'=' -f2 | tr -d "\"'" || :)
+          if [[ -z "$VERSION" ]]; then
+            echo "❌ Could not extract ARG ${IMAGE_ARG} from $FILE"
+            exit 1
+          fi
+          FULL_IMAGE="${IMAGE_PREFIX}:${VERSION}"
+        else
+          echo "❌ Either 'image' or both 'image-arg' and 'image-prefix' must be set"
+          exit 1
+        fi
+        echo "full-image=$FULL_IMAGE" >> "$GITHUB_OUTPUT"
+        echo "📦 Resolved image: $FULL_IMAGE"
+
+        # awk match anchored on the FROM line's image field (not grep -F
+        # substring) so e.g. "alpine:3.24" can't match a
+        # "FROM alpine:3.24-edge@..." line. Skip leading "--" options (e.g.
+        # "FROM --platform=$BUILDPLATFORM image@digest") to find the image field.
+        DIGEST=$(awk -v img="${FULL_IMAGE}@" '
+          $1=="FROM" {
+            for (i=2; i<=NF; i++) {
+              if ($i !~ /^--/) { if (index($i, img)==1) print $i; break }
+            }
+          }' "$FILE" | grep -oE 'sha256:[0-9a-f]{64}' | head -1 || echo "")
+        echo "digest=$DIGEST" >> "$GITHUB_OUTPUT"
+
+        if [[ -n "$DIGEST" ]]; then
+          # Strip a trailing tag before appending the digest, but only when the
+          # last colon is in the image-name segment (after the last "/"), not
+          # a registry port (e.g. "registry.example:5000/team/app").
+          IMAGE_BASE="${FULL_IMAGE##*/}"
+          if [[ "$IMAGE_BASE" == *:* ]]; then
+            FULL_IMAGE="${FULL_IMAGE%:*}"
+          fi
+          echo "pinned-image=${FULL_IMAGE}@${DIGEST}" >> "$GITHUB_OUTPUT"
+          echo "📦 Pinned digest: $DIGEST"
+        else
+          echo "pinned-image=${FULL_IMAGE}" >> "$GITHUB_OUTPUT"
+          echo "⚠️ No digest pinned in $FILE for $FULL_IMAGE"
+        fi
