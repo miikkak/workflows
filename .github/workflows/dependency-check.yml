@@ -125,37 +125,29 @@ jobs:
           curl -sL "${base_url}/v${CRANE_VERSION}/go-containerregistry_Linux_${arch}.tar.gz" \
             | tar -xz -C "$HOME/.local/bin" crane
 
+      - name: Resolve image
+        if: matrix.type == 'docker-digest'
+        id: docker-digest-resolve
+        uses: ./.github/actions/resolve-image
+        with:
+          image: ${{ matrix.image }}
+          image-arg: ${{ matrix.image-arg }}
+          image-prefix: ${{ matrix.image-prefix }}
+          file: ${{ matrix.file }}
+
       - name: Check docker digest
         if: matrix.type == 'docker-digest'
         id: docker-digest
         env:
-          IMAGE: ${{ matrix.image }}
-          IMAGE_ARG: ${{ matrix.image-arg }}
-          IMAGE_PREFIX: ${{ matrix.image-prefix }}
-          FILE: ${{ matrix.file }}
+          FULL_IMAGE: ${{ steps.docker-digest-resolve.outputs.full-image }}
+          DIGEST: ${{ steps.docker-digest-resolve.outputs.digest }}
         run: |
-          # Resolve full image name (static or derived from a Dockerfile ARG)
-          if [[ -n "${IMAGE:-}" ]]; then
-            FULL_IMAGE="$IMAGE"
-          elif [[ -n "${IMAGE_ARG:-}" && -n "${IMAGE_PREFIX:-}" ]]; then
-            VERSION=$(grep -Fm1 "ARG ${IMAGE_ARG}=" "$FILE" | cut -d'=' -f2 | tr -d "\"'")
-            if [[ -z "$VERSION" ]]; then
-              echo "❌ Could not extract ARG ${IMAGE_ARG} from $FILE"
-              exit 1
-            fi
-            FULL_IMAGE="${IMAGE_PREFIX}:${VERSION}"
-          else
-            echo "❌ Either 'image' or both 'image-arg' and 'image-prefix' must be set"
-            exit 1
-          fi
           echo "current-image=$FULL_IMAGE" >> "$GITHUB_OUTPUT"
           echo "📦 Checking image: $FULL_IMAGE"
 
-          # Extract the pinned digest from the file (-F: fixed string, image name has dots)
-          STORED_DIGEST=$(grep -Fm1 "FROM ${FULL_IMAGE}" "$FILE" \
-            | grep -oE 'sha256:[0-9a-f]{64}' || echo "unknown")
+          STORED_DIGEST="${DIGEST:-unknown}"
           if [[ "$STORED_DIGEST" == "unknown" ]]; then
-            echo "⚠️ No digest pinned in $FILE for $FULL_IMAGE"
+            echo "⚠️ No digest pinned for $FULL_IMAGE"
           else
             echo "📦 Stored digest: $STORED_DIGEST"
           fi
@@ -306,41 +298,24 @@ jobs:
 
       # ── apk-security-updates handler ────────────────────────────────────────
 
+      - name: Resolve image
+        if: matrix.type == 'apk-security-updates'
+        id: apk-security-updates-resolve
+        uses: ./.github/actions/resolve-image
+        with:
+          image: ${{ matrix.image }}
+          image-arg: ${{ matrix.image-arg }}
+          image-prefix: ${{ matrix.image-prefix }}
+          file: ${{ matrix.file }}
+
       - name: Check apk security updates
         if: matrix.type == 'apk-security-updates'
         id: apk-security-updates
         env:
-          IMAGE: ${{ matrix.image }}
-          IMAGE_ARG: ${{ matrix.image-arg }}
-          IMAGE_PREFIX: ${{ matrix.image-prefix }}
-          FILE: ${{ matrix.file }}
-        run: |
-          # Resolve full image name (static or derived from a Dockerfile ARG) -
-          # same resolution as the docker-digest handler above.
-          if [[ -n "${IMAGE:-}" ]]; then
-            FULL_IMAGE="$IMAGE"
-          elif [[ -n "${IMAGE_ARG:-}" && -n "${IMAGE_PREFIX:-}" ]]; then
-            VERSION=$(grep -Fm1 "ARG ${IMAGE_ARG}=" "$FILE" | cut -d'=' -f2 | tr -d "\"'")
-            if [[ -z "$VERSION" ]]; then
-              echo "❌ Could not extract ARG ${IMAGE_ARG} from $FILE"
-              exit 1
-            fi
-            FULL_IMAGE="${IMAGE_PREFIX}:${VERSION}"
-          else
-            echo "❌ Either 'image' or both 'image-arg' and 'image-prefix' must be set"
-            exit 1
-          fi
-
           # Test against the exact digest pinned in the file, if present, so
           # the check reflects what's actually built today, not a moving tag.
-          # awk match (not grep -F substring) so e.g. "alpine:3.24" can't
-          # match a "FROM alpine:3.24-edge@..." line.
-          DIGEST=$(awk -v img="${FULL_IMAGE}@" '$1=="FROM" && index($2, img)==1 {print $2}' "$FILE" \
-            | grep -oE 'sha256:[0-9a-f]{64}' | head -1 || echo "")
-          PINNED_IMAGE="$FULL_IMAGE"
-          if [[ -n "$DIGEST" ]]; then
-            PINNED_IMAGE="${FULL_IMAGE%:*}@${DIGEST}"
-          fi
+          PINNED_IMAGE: ${{ steps.apk-security-updates-resolve.outputs.pinned-image }}
+        run: |
           echo "📦 Checking apk packages for: $PINNED_IMAGE"
 
           # apk add --no-cache in the Dockerfile fetches from the live mirror
