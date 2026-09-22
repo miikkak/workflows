@@ -16,8 +16,11 @@ permissions:
 # ==============================================================================
 # SHARED WORKFLOW - check-release-label.yml
 # ==============================================================================
-# Validates that PRs with deployment-affecting changes carry a release: label.
-# Configuration is read from .github/label-check.yml in the calling repository.
+# Validates that PRs with deployment-affecting changes carry a release: label,
+# and flags the inverse: a release:major/minor/patch label present when only
+# exempt (docs/config) files changed, which would trigger an unnecessary
+# build/deploy. Configuration is read from .github/label-check.yml in the
+# calling repository.
 #
 # Config format (.github/label-check.yml):
 #   required: true          # Whether this repo requires a release: label at all
@@ -245,6 +248,18 @@ jobs:
           print(f'🏷️  Labels on PR: {sorted(labels) or "(none)"}')
 
           if not deployment_files:
+              overlabeled = release_labels_present - {'release:none'}
+              if overlabeled:
+                  print(f'🏷️  Labels on PR: {sorted(labels)}')
+                  print()
+                  print(f'❌ Release label {sorted(overlabeled)} present but no deployment-affecting')
+                  print('   files changed (docs/config only) — this would trigger an unnecessary')
+                  print('   build/deploy of unchanged container content.')
+                  print()
+                  print('   Replace it with release:none, or if one of the changed files should')
+                  print(f'   actually be deployment-affecting, remove it from exempt_patterns in')
+                  print(f'   {CONFIG_PATH}.')
+                  sys.exit(1)
               print('✅ All changed files are exempt (docs/config only) — no release label required')
               sys.exit(0)
 
