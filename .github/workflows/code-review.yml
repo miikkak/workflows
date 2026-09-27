@@ -651,14 +651,16 @@ jobs:
 
           def call_nvidia(system_prompt, content_blocks):
               # NVIDIA NIM's free tier (10,000 RPD / 40 RPM per the NVIDIA Developer
-              # Program) is generous enough to sit ahead of OpenRouter's free pool —
-              # tested live against this repo's own diffs: openai/gpt-oss-120b
-              # answered in 20-30s and, on a ~1,200-line real diff, caught 2 of 3
-              # MUST FIX items correctly (the third was a real over-generalization,
-              # not a fabrication). nvidia/nemotron-3-ultra-550b-a55b, tried during
-              # the same testing, hit a 503 then a timeout — the flagship model
-              # looks commonly oversubscribed on the free tier, so gpt-oss-120b is
-              # the one actually wired in here, not NVIDIA's own largest model.
+              # Program) is generous enough to sit ahead of OpenRouter's free pool.
+              # openai/gpt-oss-120b (the model previously wired in here) was
+              # retired by NVIDIA (HTTP 410 "end of life" as of 2026-09-03) and is
+              # no longer callable at all. moonshotai/kimi-k3 replaces it: tested
+              # live against this repo's own diffs (a real merged action.yml with
+              # two seeded bugs — an ((var++)) post-increment under set -e and an
+              # unquoted glob in an rm -f), it answered in 25-70s, correctly
+              # flagged both as MUST FIX with the right severity, and returned a
+              # clean VERDICT: PASS with no fabricated MUST FIX items on an
+              # unmodified, already-correct diff.
               client = openai.OpenAI(
                   base_url="https://integrate.api.nvidia.com/v1",
                   api_key=os.environ['NVIDIA_API_KEY'],
@@ -666,7 +668,7 @@ jobs:
                   max_retries=1,
               )
               response = client.chat.completions.create(
-                  model="openai/gpt-oss-120b",
+                  model="moonshotai/kimi-k3",
                   messages=[
                       {"role": "system", "content": system_prompt},
                       {"role": "user", "content": _flatten_content_blocks(content_blocks)},
@@ -744,9 +746,9 @@ jobs:
           # is scarce enough to treat as an emergency-only spare rather than an
           # equal peer, then NVIDIA NIM and OpenRouter's free pool as two
           # independent free-tier safety nets. NVIDIA goes first: tested live
-          # against this repo's own diffs, openai/gpt-oss-120b answered in
-          # 20-30s and, on a real ~1,200-line diff, caught 2 of 3 MUST FIX items
-          # correctly (see call_nvidia). OpenRouter stays as a second free-tier
+          # against this repo's own diffs, moonshotai/kimi-k3 caught seeded bugs
+          # correctly with no false positives on a clean diff (see
+          # call_nvidia). OpenRouter stays as a second free-tier
           # fallback rather than being dropped for it — already proven reliable
           # in this repo's own review history (its default model list falls
           # through to a working one when the first is congested) — so a bad day
@@ -805,9 +807,9 @@ jobs:
                   'trusted': True,
               },
               'nvidia': {
-                  'label': 'NVIDIA NIM (gpt-oss-120b)',
+                  'label': 'NVIDIA NIM (kimi-k3)',
                   'available': lambda: bool(os.environ.get('NVIDIA_API_KEY')),
-                  'call': lambda sp, cb: (call_nvidia(sp, cb), 'NVIDIA NIM (gpt-oss-120b)'),
+                  'call': lambda sp, cb: (call_nvidia(sp, cb), 'NVIDIA NIM (kimi-k3)'),
                   'exceptions': (openai.APIStatusError, openai.APIConnectionError),
                   'trusted': False,
               },
