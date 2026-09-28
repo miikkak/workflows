@@ -128,7 +128,7 @@ jobs:
       - name: Resolve image
         if: matrix.type == 'docker-digest'
         id: docker-digest-resolve
-        uses: ./.github/actions/resolve-image
+        uses: miikkak/workflows/.github/actions/resolve-image@main
         with:
           image: ${{ matrix.image }}
           image-arg: ${{ matrix.image-arg }}
@@ -301,7 +301,7 @@ jobs:
       - name: Resolve image
         if: matrix.type == 'apk-security-updates'
         id: apk-security-updates-resolve
-        uses: ./.github/actions/resolve-image
+        uses: miikkak/workflows/.github/actions/resolve-image@main
         with:
           image: ${{ matrix.image }}
           image-arg: ${{ matrix.image-arg }}
