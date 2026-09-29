@@ -645,7 +645,14 @@ jobs:
               response = client.models.generate_content(
                   model="gemini-3.5-flash",
                   contents=_flatten_content_blocks(content_blocks),
-                  config=genai_types.GenerateContentConfig(system_instruction=system_prompt),
+                  # No tools are passed, so AFC is unused; disabling it explicitly
+                  # silences the SDK's "direct use of AFC" warning.
+                  config=genai_types.GenerateContentConfig(
+                      system_instruction=system_prompt,
+                      automatic_function_calling=genai_types.AutomaticFunctionCallingConfig(
+                          disable=True
+                      ),
+                  ),
               )
               return response.text
 
