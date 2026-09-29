@@ -220,4 +220,7 @@ jobs:
           pre-commit run --show-diff-on-failure --color=always
           --from-ref ${{ env.MERGE_BASE }} --to-ref ${{ env.HEAD_SHA }}
         env:
-          SKIP: no-commit-to-branch
+          # gitleaks is skipped here: its hook scans only *staged* changes,
+          # which is nothing on a clean CI checkout. Real coverage comes from
+          # secret-scan.yml, which scans the PR's commit range.
+          SKIP: no-commit-to-branch,gitleaks

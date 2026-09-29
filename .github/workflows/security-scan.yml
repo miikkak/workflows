@@ -61,6 +61,7 @@ jobs:
         with:
           scan-type: "fs"
           scan-ref: "."
+          scanners: "vuln,secret"
           format: "table"
           severity: "CRITICAL,HIGH,MEDIUM"
           exit-code: "0" # Don't fail the workflow, just report
@@ -71,6 +72,7 @@ jobs:
         with:
           scan-type: "fs"
           scan-ref: "."
+          scanners: "vuln,secret"
           format: "json"
           output: "trivy-fs-results.json"
           severity: "CRITICAL,HIGH"
@@ -95,6 +97,7 @@ jobs:
 
             let criticalCount = 0;
             let highCount = 0;
+            let secretCount = 0;
 
             if (trivyResults.Results) {
               trivyResults.Results.forEach(result => {
@@ -104,11 +107,14 @@ jobs:
                     if (vuln.Severity === 'HIGH') highCount++;
                   });
                 }
+                if (result.Secrets) {
+                  secretCount += result.Secrets.length;
+                }
               });
             }
 
-            if (criticalCount === 0 && highCount === 0) {
-              console.log('✅ No critical or high vulnerabilities found in filesystem scan!');
+            if (criticalCount === 0 && highCount === 0 && secretCount === 0) {
+              console.log('✅ No critical or high vulnerabilities or secrets found in filesystem scan!');
               return;
             }
 
@@ -131,13 +137,15 @@ jobs:
               '',
               `- **Critical:** ${criticalCount}`,
               `- **High:** ${highCount}`,
+              `- **Secrets (current tree):** ${secretCount}`,
               '',
               '### Action Required',
               '',
               '1. Review the vulnerabilities in the workflow logs (link below)',
-              '2. Update affected dependencies or configurations',
-              '3. Test the changes',
-              '4. Create a PR with fixes',
+              '2. Rotate any exposed secret first — the gitleaks scan (secret-scan.yml) covers history',
+              '3. Update affected dependencies or configurations',
+              '4. Test the changes',
+              '5. Create a PR with fixes',
               '',
               '### Scan Details',
               '',
@@ -175,6 +183,7 @@ jobs:
         with:
           scan-type: "fs"
           scan-ref: "."
+          scanners: "vuln,secret"
           format: "table"
           severity: "CRITICAL"
           exit-code: "1"

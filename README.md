@@ -48,6 +48,7 @@ Only add a `secrets:` block if the workflow you're calling actually declares one
 | `cd.yml`                      | Post-merge pipeline: `semantic-release` versioning/tagging driven by release labels |
 | `code-review.yml`             | AI code review with a configurable model fallback chain                             |
 | `security-scan.yml`           | Scheduled Trivy/govulncheck-based dependency vulnerability scanning                 |
+| `secret-scan.yml`             | gitleaks secret scanning: PR range (merge gate), push range, scheduled full history |
 | `super-linter.yml`            | `super-linter`-based multi-language linting                                         |
 | `release-label.yml`           | Enforces a `release:major`/`release:minor`/`release:patch`/`release:none` label     |
 | `check-release-label.yml`     | Lighter-weight release-label presence check for other workflows to depend on        |
@@ -72,6 +73,48 @@ This repo deliberately doesn't tag or publish releases of itself - consumers pin
 nothing to attach beyond the repo's own config files (`.github/` itself, the actually useful
 part, would have to be excluded from any such tarball to avoid duplicating what git already
 gives you).
+
+## Secret scanning
+
+Layered so no single bypass (`git commit --no-verify`, a skipped hook, a direct push) leaves a
+secret unnoticed:
+
+1. **Local** - the `gitleaks` pre-commit hook (scans staged changes; skippable with `--no-verify`).
+2. **PR gate** - `secret-scan.yml` on `pull_request` scans the PR's commit range; mark the check
+   required in branch protection/rulesets so it blocks merge.
+3. **Push** - the same workflow on `push` scans each push's new commits within minutes, even
+   before a PR exists, and opens a `security` issue on a hit.
+4. **Scheduled** - the same workflow on `schedule` scans full history of every ref daily and
+   opens/updates the issue. `security-scan.yml` (Trivy, `vuln,secret`) is a second, tree-only
+   opinion.
+
+Consumers add one thin caller (pin the SHA like every other reusable workflow here):
+
+```yaml
+name: Secret Scan
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: ["**"]
+  schedule:
+    - cron: "30 3 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  secret-scan:
+    uses: miikkak/workflows/.github/workflows/secret-scan.yml@<sha> # main
+```
+
+Findings are redacted; any hit means the credential must be rotated. False positives go in a
+repo-level `.gitleaksignore` (fingerprints) or `.gitleaks.toml` (`[extend] useDefault = true`
+plus an allowlist) - gitleaks picks both up from the repo root, so there's no shared config to
+drift.
 
 ## Design notes
 
