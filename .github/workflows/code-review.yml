@@ -66,7 +66,7 @@ jobs:
         (inputs.runner == null && github.event.pull_request.draft == false) ||
         (inputs.runner != null && inputs.enabled == true)
       )
-    timeout-minutes: 10
+    timeout-minutes: 12
     env:
       ANTHROPIC_VERSION: "1.9.0"
       OPENAI_VERSION: "3.2.0"
@@ -118,6 +118,8 @@ jobs:
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
           OPENROUTER_MODELS: ${{ vars.OPENROUTER_MODELS }}
           REVIEW_TIERS: ${{ vars.REVIEW_TIERS }}
+          # Flush prints immediately so the tier log survives a job kill.
+          PYTHONUNBUFFERED: "1"
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
           REPO: ${{ github.repository }}
@@ -136,6 +138,24 @@ jobs:
           import time
           import urllib.error
           import urllib.request
+
+          # Wall-clock budget for the whole tier chain, measured from script
+          # start. The job's timeout-minutes is 12; the chain gets 9 minutes so
+          # there is always time left to post a result (or the neutral
+          # "every tier failed" comment) instead of the job being cancelled
+          # with nothing posted. Per-call timeouts below are capped to what is
+          # left of this budget.
+          START = time.monotonic()
+          CHAIN_BUDGET_SECONDS = 540
+          MIN_TIER_SECONDS = 20
+
+          def remaining_seconds():
+              return CHAIN_BUDGET_SECONDS - (time.monotonic() - START)
+
+          def budgeted_timeout(default, attempts=1):
+              # Cap a per-attempt timeout so `attempts` sequential attempts
+              # (initial + SDK retries) still fit in the remaining budget.
+              return max(1.0, min(default, remaining_seconds() / attempts))
 
           import httpx
 
@@ -581,9 +601,9 @@ jobs:
           def call_anthropic(system_prompt, content_blocks):
               # Explicit timeout, not the SDK's 600s default: a stalled (not
               # erroring) first-tier request could otherwise sit for most of
-              # the job's own 10-minute timeout before the fallback chain ever
+              # the job's own timeout before the fallback chain ever
               # gets a turn, or before anything gets posted at all.
-              client = anthropic.Anthropic(timeout=60.0, max_retries=1)
+              client = anthropic.Anthropic(timeout=budgeted_timeout(60.0, 2), max_retries=1)
               message = client.messages.create(
                   model="claude-sonnet-5",
                   max_tokens=4096,
@@ -610,7 +630,7 @@ jobs:
 
           def call_openai(system_prompt, content_blocks):
               # Same reasoning as call_anthropic's explicit timeout above.
-              client = openai.OpenAI(timeout=60.0, max_retries=1)
+              client = openai.OpenAI(timeout=budgeted_timeout(60.0, 2), max_retries=1)
               response = client.chat.completions.create(
                   model="gpt-5",
                   messages=[
@@ -640,7 +660,7 @@ jobs:
               # is in milliseconds, not seconds.
               client = genai.Client(
                   api_key=os.environ['GEMINI_API_KEY'],
-                  http_options=genai_types.HttpOptions(timeout=60_000),
+                  http_options=genai_types.HttpOptions(timeout=int(budgeted_timeout(60.0) * 1000)),
               )
               response = client.models.generate_content(
                   model="gemini-3.5-flash",
@@ -671,8 +691,10 @@ jobs:
               client = openai.OpenAI(
                   base_url="https://integrate.api.nvidia.com/v1",
                   api_key=os.environ['NVIDIA_API_KEY'],
-                  timeout=90.0,
-                  max_retries=1,
+                  # No SDK retries on the free tiers: the chain already falls
+                  # through to the next tier, and a retry only doubles the wait.
+                  timeout=budgeted_timeout(90.0),
+                  max_retries=0,
               )
               response = client.chat.completions.create(
                   model="moonshotai/kimi-k3",
@@ -717,17 +739,22 @@ jobs:
                   base_url="https://openrouter.ai/api/v1",
                   api_key=os.environ['OPENROUTER_API_KEY'],
                   # The openai SDK's own default (600s) could eat most of the job's
-                  # 10-minute timeout on this tier alone — bound it well below
-                  # that. Each model only gets one retry (plus its initial
-                  # attempt) so the worst case across the whole list still
-                  # leaves the job time to post a result either way.
+                  # timeout on this tier alone — bound it well below that. No SDK
+                  # retries: each model in the list is itself the retry, and the
+                  # per-model timeout is capped to the remaining chain budget.
                   timeout=45.0,
-                  max_retries=1,
+                  max_retries=0,
               )
               last_exc = None
-              for model in models:
+              for i, model in enumerate(models):
+                  if remaining_seconds() < MIN_TIER_SECONDS:
+                      print(f"OpenRouter: time budget exhausted before model {model!r}")
+                      break
                   try:
-                      response = client.chat.completions.create(
+                      response = client.with_options(
+                          # Split what is left across the models still to try.
+                          timeout=budgeted_timeout(45.0, len(models) - i)
+                      ).chat.completions.create(
                           model=model,
                           messages=[
                               {"role": "system", "content": system_prompt},
@@ -999,6 +1026,10 @@ jobs:
           trusted = None
           attempts = []
           for key, tier in tier_candidates:
+              if remaining_seconds() < MIN_TIER_SECONDS:
+                  print(f"Tier {key!r} skipped — chain time budget exhausted")
+                  attempts.append(f"{tier['label']} — skipped (time budget exhausted)")
+                  continue
               try:
                   review_text, label = tier['call'](system_prompt, content_blocks)
                   if not review_text or not review_text.strip():
