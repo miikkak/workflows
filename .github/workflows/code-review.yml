@@ -742,20 +742,21 @@ jobs:
           # suitability for text review. In testing it landed on a content-safety
           # classifier that returned "User Safety: safe" instead of an actual
           # review — silently useless output, not a catchable error. These are
-          # picked instead for actual code/reasoning capability: Inkling and
-          # Laguna S 2.1 are large reasoning/coding-agent models, Qwen3.8 27B is
-          # a coding-capable dense model, and Nemotron 3 Ultra is kept last (it
-          # is also the NVIDIA tier's family). Several fallbacks because free
-          # slugs get retired without notice (GLM 5.2 and MiniMax M3 both began
-          # returning 404 "unavailable for free"), and the shared free pool can
-          # 429 per model. Verify slugs against
+          # picked instead for actual code/reasoning capability: Laguna S 2.1 is
+          # a large reasoning/coding-agent model, Qwen3.8 27B is a coding-capable
+          # dense model, Gemma 4 31B is a general instruction-tuned model, and
+          # Nemotron 3 Ultra is kept last (it is also the NVIDIA tier's family).
+          # Several fallbacks because free slugs get retired or gated without
+          # notice (GLM 5.2 and MiniMax M3 began returning 404 "unavailable for
+          # free"; Inkling returns 403 "only available on agentic harnesses" for
+          # plain API calls), and the shared free pool can 429 per model. Verify slugs against
           # https://openrouter.ai/api/v1/models (ids ending in ":free").
           # Override with the OPENROUTER_MODELS repo/org variable: a comma-separated
           # list tried in the given order (e.g. "vendor/model-a:free,vendor/model-b:free").
           DEFAULT_OPENROUTER_MODELS = [
-              'thinkingmachines/inkling:free',
               'poolside/laguna-s-2.1:free',
               'qwen/qwen3.8-27b:free',
+              'google/gemma-4-31b-it:free',
               'nvidia/nemotron-3-ultra-550b-a55b:free',
           ]
 
@@ -804,7 +805,9 @@ jobs:
                           min(per_model_timeout + 15.0, remaining_seconds()),
                           f"OpenRouter model {model!r}",
                       )
-                      content = response.choices[0].message.content
+                      # A 200 whose body is an error payload has choices=None;
+                      # treat it as this model failing, not a TypeError.
+                      content = response.choices[0].message.content if response.choices else None
                       if not content or not content.strip():
                           # Treat empty/whitespace-only/None content (e.g. a model
                           # that only emitted a tool call or reasoning trace) as a
