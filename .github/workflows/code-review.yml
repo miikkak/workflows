@@ -711,17 +711,21 @@ jobs:
           # feature support (tool calling, vision, structured outputs) — not by
           # suitability for text review. In testing it landed on a content-safety
           # classifier that returned "User Safety: safe" instead of an actual
-          # review — silently useless output, not a catchable error. These three
-          # are picked instead for actual code/reasoning capability: GLM 5.2 is
-          # explicitly positioned for project-level software engineering review;
-          # MiniMax M3 and Nemotron 3 Ultra are large general-purpose/agentic
-          # models kept as fallbacks in case GLM's shared free pool is congested
-          # (observed: upstream_429 on OpenRouter's shared pool for GLM alone).
+          # review — silently useless output, not a catchable error. These are
+          # picked instead for actual code/reasoning capability: Inkling and
+          # Laguna S 2.1 are large reasoning/coding-agent models, Qwen3.8 27B is
+          # a coding-capable dense model, and Nemotron 3 Ultra is kept last (it
+          # is also the NVIDIA tier's family). Several fallbacks because free
+          # slugs get retired without notice (GLM 5.2 and MiniMax M3 both began
+          # returning 404 "unavailable for free"), and the shared free pool can
+          # 429 per model. Verify slugs against
+          # https://openrouter.ai/api/v1/models (ids ending in ":free").
           # Override with the OPENROUTER_MODELS repo/org variable: a comma-separated
           # list tried in the given order (e.g. "vendor/model-a:free,vendor/model-b:free").
           DEFAULT_OPENROUTER_MODELS = [
-              'z-ai/glm-5.2:free',
-              'minimax/minimax-m3:free',
+              'thinkingmachines/inkling:free',
+              'poolside/laguna-s-2.1:free',
+              'qwen/qwen3.8-27b:free',
               'nvidia/nemotron-3-ultra-550b-a55b:free',
           ]
 
