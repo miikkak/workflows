@@ -27,6 +27,12 @@
       "matchStrings": ["GOVULNCHECK_VERSION: \"(?<currentValue>[^\"]+)\""],
       "depNameTemplate": "golang.org/x/vuln",
       "datasourceTemplate": "go"
+    },
+    {
+      "fileMatch": ["^\\.github/workflows/secret-scan\\.yml$"],
+      "matchStrings": ["GITLEAKS_VERSION: \"(?<currentValue>[^\"]+)\""],
+      "depNameTemplate": "gitleaks/gitleaks",
+      "datasourceTemplate": "github-releases"
     }
   ]
 }
