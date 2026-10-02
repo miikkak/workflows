@@ -1,0 +1,10 @@
+# Public repos: free secret scanning tier and CodeRabbit.
+settings:
+  security_and_analysis:
+    secret_scanning: {status: enabled}
+    secret_scanning_push_protection: {status: enabled}
+
+ruleset:
+  required_status_checks:
+    checks:
+      CodeRabbit: {}

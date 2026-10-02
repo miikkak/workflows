@@ -1,0 +1,53 @@
+# Which profile a repo gets is derived from GitHub's primaryLanguage via
+# `languages`; set `profile` on a repo to override. A profile is the file
+# profiles/<name>.yaml (missing file = no extra config). Repos that are not
+# listed below are still governed (defaults + visibility + language profile),
+# `audit` just reports them as unlisted.
+#
+# Per repo:
+#   profile: <name>   force a profile
+#   skip: [..]        sections not to manage: settings, security,
+#                     workflow_permissions, labels, ruleset
+#   config: {..}      overrides, same shape as defaults.yaml
+languages:
+  Go: go
+  Java: java
+  Python: python
+  Shell: shell
+  C#: dotnet
+
+repos:
+  # Stock repos without a PR workflow: no ruleset, so no labels, no
+  # review-approval permission to manage either. dotfiles is chezmoi-managed
+  # with direct pushes by design; claude-memory is automation-only storage;
+  # renovate-config only hosts Renovate bot config.
+  dotfiles:
+    skip: [ruleset, labels, workflow_permissions]
+  claude-memory:
+    skip: [ruleset, labels, workflow_permissions]
+  renovate-config:
+    skip: [ruleset, labels, workflow_permissions]
+
+  # The shared-workflows repo runs its own workflows directly, not through
+  # the reusable-workflow caller jobs, so its check names have no
+  # "<job> / " prefix.
+  workflows:
+    config:
+      ruleset:
+        required_status_checks:
+          checks:
+            "pre-commit / pre-commit": null
+            "ci-cd / Run Test Suite": null
+            "review / AI Code Review": null
+            "secret-scan / Gitleaks": null
+            "pre-commit": {integration_id: 15368}
+            "AI Code Review": {integration_id: 15368}
+            "Gitleaks": {requires_file: .github/workflows/secret-scan.yml}
+
+  # Builds a container image in CI.
+  pc-price-tracker:
+    config:
+      ruleset:
+        required_status_checks:
+          checks:
+            "Build Container Image": {integration_id: 15368}
