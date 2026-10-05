@@ -68,7 +68,7 @@ repos:
   # (skippable with --no-verify); the pre-push stage re-scans the commits being
   # pushed. CI (secret-scan.yml) is the non-bypassable backstop.
   - repo: https://github.com/gitleaks/gitleaks
-    rev: v8.30.1
+    rev: v8.30.0
     hooks:
       - id: gitleaks
         stages: [pre-commit]
@@ -95,7 +95,7 @@ repos:
 
   # Python linting with ruff (only runs if .py files present)
   - repo: https://github.com/astral-sh/ruff-pre-commit
-    rev: v0.16.9
+    rev: v0.16.10
     hooks:
       - id: ruff
         args: [--fix]
