@@ -1012,6 +1012,21 @@ jobs:
           trivial, trivial_reason = is_trivial_diff(diff, changed_files)
           if trivial:
               print(f"Skipping review: trivial diff ({trivial_reason})")
+              # Post a COMMENT (never APPROVE/REQUEST_CHANGES, so it neither
+              # clears nor adds a blocking review) so anyone checking the PR can
+              # see the action ran and deliberately skipped the deeper review.
+              # Carries the reviewed-sha/diff-hash markers so a re-run on the
+              # same commit doesn't post a duplicate.
+              trivial_body = (
+                  f"## Code Review\n<!-- reviewed-sha: {head_sha} -->"
+                  f"<!-- diff-hash: {diff_hash} -->\n\n"
+                  f"Skipped deep review: trivial diff ({trivial_reason}). "
+                  "No model review was run for this commit."
+              )
+              try:
+                  post_review(trivial_body, "COMMENT")
+              except Exception as post_err:
+                  print(f"Warning: could not post trivial-skip comment: {post_err}")
               sys.exit(0)
 
           # Collect prior MUST FIX items so Claude can verify they were resolved
