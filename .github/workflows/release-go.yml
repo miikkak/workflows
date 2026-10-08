@@ -1,0 +1,164 @@
+---
+name: Release Go
+
+on: # yamllint disable-line rule:truthy
+  workflow_call:
+    inputs:
+      binary:
+        description: "Binary name (e.g. mc-healthcheck); also the archive name prefix"
+        required: true
+        type: string
+      cmd:
+        description: "Main package to build; defaults to ./cmd/<binary>/"
+        type: string
+        default: ""
+      archs:
+        description: "Space-separated linux GOARCH values to build"
+        type: string
+        default: "amd64 arm64"
+      extra-files:
+        description: "Space-separated repo files to ship in each archive next to the binary"
+        type: string
+        default: "README.md LICENSE"
+      runner:
+        description: Runner labels as a JSON array string (e.g. '["self-hosted","linux","x64"]')
+        type: string
+        default: '["self-hosted","linux","x64"]'
+      tag:
+        description: "Tag to release (for workflow_dispatch passthrough; empty when triggered by tag push)"
+        required: false
+        type: string
+        default: ""
+      dry-run:
+        description: "Build and archive for real, but skip creating the GitHub Release"
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+# ==============================================================================
+# SHARED WORKFLOW - release-go.yml
+# ==============================================================================
+# Handles: tag validation -> go test -race -> static cross-builds -> per-arch
+# tar.gz archives -> GitHub Release.
+#
+# Builds use CGO_ENABLED=0, -trimpath (no runner paths in panic traces) and
+# -ldflags="-s -w -X main.version=<tag>". Archives are named
+# <binary>_<tag>_linux_<arch>.tar.gz and contain the binary plus extra-files.
+#
+# The build job (which runs repo code via `go test`) is read-only and does not
+# persist checkout credentials; only the final release job holds
+# `contents: write`, so callers must grant it.
+#
+# Callers keep their own triggers and concurrency group; pass `tag` from the
+# workflow_dispatch input and leave it empty for tag pushes.
+# ==============================================================================
+
+jobs:
+  validate-tag-input:
+    uses: ./.github/workflows/validate-tag.yml
+    with:
+      runner: ${{ inputs.runner }}
+      # Effective tag: explicit input, else the pushed tag, so tag pushes get
+      # the same format/existence check as workflow_dispatch.
+      tag: ${{ inputs.tag || (startsWith(github.ref, 'refs/tags/') && github.ref_name) || '' }}
+
+  build-release:
+    name: Build and Release
+    runs-on: ${{ fromJson(inputs.runner || '["self-hosted","linux","x64"]') }}
+    timeout-minutes: 15
+    needs: validate-tag-input
+    if: |
+      always() &&
+      (needs.validate-tag-input.result == 'success' || needs.validate-tag-input.result == 'skipped')
+    outputs:
+      tag: ${{ steps.version.outputs.tag }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ (inputs.tag != '' && inputs.tag) || github.ref }}
+          persist-credentials: false
+
+      - name: Set up Go
+        if: runner.environment == 'github-hosted'
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Determine version
+        id: version
+        env:
+          INPUT_TAG: ${{ inputs.tag }}
+        run: |
+          set -Eeuo pipefail
+          if [[ -n "$INPUT_TAG" ]]; then
+            echo "tag=$INPUT_TAG" >> "$GITHUB_OUTPUT"
+          elif [[ "$GITHUB_REF" == refs/tags/* ]]; then
+            echo "tag=${GITHUB_REF#refs/tags/}" >> "$GITHUB_OUTPUT"
+          else
+            echo "❌ No tag input and ref is not a tag: $GITHUB_REF"
+            exit 1
+          fi
+
+      - name: Run tests
+        run: go test ./... -race
+
+      - name: Build and archive
+        env:
+          RELEASE_TAG: ${{ steps.version.outputs.tag }}
+          BINARY: ${{ inputs.binary }}
+          CMD: ${{ inputs.cmd }}
+          ARCHS: ${{ inputs.archs }}
+          EXTRA_FILES: ${{ inputs.extra-files }}
+        run: |
+          set -Eeuo pipefail
+          cmd="${CMD:-./cmd/${BINARY}/}"
+          read -r -a archs <<< "$ARCHS"
+          read -r -a extra <<< "$EXTRA_FILES"
+          for arch in "${archs[@]}"; do
+            CGO_ENABLED=0 GOOS=linux GOARCH="$arch" \
+              go build \
+                -trimpath \
+                -ldflags="-s -w -X main.version=${RELEASE_TAG}" \
+                -o "$BINARY" \
+                "$cmd"
+            tar czf "${BINARY}_${RELEASE_TAG}_linux_${arch}.tar.gz" \
+              "$BINARY" "${extra[@]}"
+            rm "$BINARY"
+          done
+          ls -l ./*.tar.gz
+
+      - name: Upload archives
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: ${{ github.event.repository.name }}-go-archives
+          path: "*.tar.gz"
+          retention-days: 90
+
+  release:
+    name: Create GitHub Release
+    runs-on: ${{ fromJson(inputs.runner || '["self-hosted","linux","x64"]') }}
+    timeout-minutes: 10
+    needs: build-release
+    if: inputs.dry-run != true
+    permissions:
+      contents: write
+    steps:
+      - name: Download archives
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          name: ${{ github.event.repository.name }}-go-archives
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3
+        with:
+          tag_name: ${{ needs.build-release.outputs.tag }}
+          name: ${{ needs.build-release.outputs.tag }}
+          files: "*.tar.gz"
+          generate_release_notes: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

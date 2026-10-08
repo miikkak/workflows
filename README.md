@@ -54,6 +54,7 @@ Only add a `secrets:` block if the workflow you're calling actually declares one
 | `check-release-label.yml`     | Lighter-weight release-label presence check for other workflows to depend on        |
 | `release-deploy.yml`          | Deploys a release to configured target servers over SSH                             |
 | `release-tarball.yml`         | Builds and attaches a release tarball to a GitHub Release                           |
+| `release-go.yml`              | Tests, cross-builds (`-trimpath`), archives and releases a Go binary                |
 | `dependabot-automerge.yml`    | Auto-approves and merges eligible Dependabot PRs                                    |
 | `gradle-lockfile-refresh.yml` | Regenerates a stale `gradle.lockfile` on PRs that need it                           |
 | `cache-cleanup.yml`           | Prunes stale GitHub Actions caches on a schedule                                    |
