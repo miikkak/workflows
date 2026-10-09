@@ -766,7 +766,9 @@ jobs:
                       {"role": "user", "content": _flatten_content_blocks(content_blocks)},
                   ],
               )
-              return response.choices[0].message.content if response.choices else None
+              # Always a string: an empty choices list or a null content field
+              # counts as an empty tier response in the chain loop.
+              return (response.choices[0].message.content or '') if response.choices else ''
 
           # Tried in order until one produces usable output. Never the
           # "openrouter/free" router itself: per OpenRouter's own docs that router
