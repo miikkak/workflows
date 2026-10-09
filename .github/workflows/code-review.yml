@@ -115,6 +115,7 @@ jobs:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           NVIDIA_API_KEY: ${{ secrets.NVIDIA_API_KEY }}
+          HETZNER_API_KEY: ${{ secrets.HETZNER_API_KEY }}
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
           OPENROUTER_MODELS: ${{ vars.OPENROUTER_MODELS }}
           REVIEW_TIERS: ${{ vars.REVIEW_TIERS }}
@@ -457,7 +458,9 @@ jobs:
                           in_consider = False
                           continue
                       consider_lines.append(line)
-              return '\n'.join(consider_lines).strip()
+              return '\n'.join(
+                  l for l in consider_lines if l.strip().strip('()').lower() != 'none'
+              ).strip()
 
           def extract_must_fix_items(body):
               # Same accumulate-across-sections rationale as extract_consider_items.
@@ -473,7 +476,9 @@ jobs:
                           in_must_fix = False
                           continue
                       must_fix_lines.append(line)
-              return '\n'.join(must_fix_lines).strip()
+              return '\n'.join(
+                  l for l in must_fix_lines if l.strip().strip('()').lower() != 'none'
+              ).strip()
 
           def build_system_prompt():
               return (
@@ -735,6 +740,34 @@ jobs:
               )
               return response.choices[0].message.content
 
+          def call_hetzner(system_prompt, content_blocks):
+              # Hetzner Experiments Platform Inference API (free while
+              # experimental; OpenAI-compatible). Qwen3.6-35B-A3B (MoE) was tested
+              # live against this repo's review prompt: it flagged both seeded
+              # bugs (a ((var++)) post-increment under set -e and an unquoted
+              # expansion in an rm -f) as MUST FIX and returned a clean
+              # VERDICT: PASS on a correct diff, in ~30s. Qwen3.8-27B (dense) was
+              # not usable: it timed out at 170s and was disconnected at 300s
+              # on the same diff. Reasoning comes back in a separate `reasoning`
+              # field, so `content` is the review alone. The model list changes
+              # during the experimental phase — GET /models is authoritative.
+              # Limits per key: 10 requests / 60s, 4M input / 100k output tokens.
+              client = openai.OpenAI(
+                  base_url="https://inference.hetzner.com/api/v1",
+                  api_key=os.environ['HETZNER_API_KEY'],
+                  # No SDK retries: the chain falls through to the next tier.
+                  timeout=budgeted_timeout(90.0),
+                  max_retries=0,
+              )
+              response = client.chat.completions.create(
+                  model="Qwen/Qwen3.6-35B-A3B-FP8",
+                  messages=[
+                      {"role": "system", "content": system_prompt},
+                      {"role": "user", "content": _flatten_content_blocks(content_blocks)},
+                  ],
+              )
+              return response.choices[0].message.content if response.choices else None
+
           # Tried in order until one produces usable output. Never the
           # "openrouter/free" router itself: per OpenRouter's own docs that router
           # randomly selects among all ~24 free-tier models, filtered only by
@@ -843,18 +876,18 @@ jobs:
           # happened" outcome the neutral-comment path already reports instantly.
           # Override per-repo with the REVIEW_TIERS variable — a comma-separated
           # list of these keys in the order to try (valid keys: anthropic,
-          # openai, gemini, nvidia, openrouter — e.g. "anthropic,gemini" to skip
+          # openai, gemini, nvidia, hetzner, openrouter — e.g. "anthropic,gemini" to skip
           # the rest entirely). A tier is only actually attempted if it's also
           # available() — has its API key configured.
-          DEFAULT_TIER_ORDER = ['anthropic', 'openai', 'gemini', 'nvidia', 'openrouter']
+          DEFAULT_TIER_ORDER = ['anthropic', 'openai', 'gemini', 'nvidia', 'hetzner', 'openrouter']
 
           def _openrouter_tier(sp, cb):
               content, model = call_openrouter(sp, cb)
               return content, f"OpenRouter ({model})"
 
           # "trusted" gates auto-approval: a real provider's clean PASS is trusted
-          # to approve the PR outright; NVIDIA NIM and OpenRouter are both free
-          # tiers of open-weight models — meaningfully weaker and, per live
+          # to approve the PR outright; NVIDIA NIM, Hetzner and OpenRouter are all
+          # free tiers of open-weight models — meaningfully weaker and, per live
           # testing, capable of confidently wrong findings — so a PASS from
           # either is shown but never auto-approves; see the event-decision
           # logic below.
@@ -890,6 +923,13 @@ jobs:
                   'label': 'NVIDIA NIM (kimi-k3)',
                   'available': lambda: bool(os.environ.get('NVIDIA_API_KEY')),
                   'call': lambda sp, cb: (call_nvidia(sp, cb), 'NVIDIA NIM (kimi-k3)'),
+                  'exceptions': (openai.APIStatusError, openai.APIConnectionError),
+                  'trusted': False,
+              },
+              'hetzner': {
+                  'label': 'Hetzner (Qwen3.6-35B-A3B)',
+                  'available': lambda: bool(os.environ.get('HETZNER_API_KEY')),
+                  'call': lambda sp, cb: (call_hetzner(sp, cb), 'Hetzner (Qwen3.6-35B-A3B)'),
                   'exceptions': (openai.APIStatusError, openai.APIConnectionError),
                   'trusted': False,
               },
@@ -962,7 +1002,7 @@ jobs:
               print(
                   "No review tier is available (checked: ANTHROPIC_API_KEY, "
                   "OPENAI_API_KEY, GEMINI_API_KEY, NVIDIA_API_KEY, "
-                  "OPENROUTER_API_KEY), skipping review"
+                  "HETZNER_API_KEY, OPENROUTER_API_KEY), skipping review"
               )
               sys.exit(0)
           print(f"Tier order: {[k for k, _ in tier_candidates]}")
