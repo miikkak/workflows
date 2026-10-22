@@ -634,7 +634,7 @@ jobs:
         uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad # v6
         with:
           distribution: temurin
-          java-version: "25.0.4+101.0.LTS"
+          java-version: "25.0.5+8.0.LTS"
 
       - name: Cache Dependency-Check CLI
         if: steps.check_java.outputs.has_java == 'true'
