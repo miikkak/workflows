@@ -640,9 +640,11 @@ jobs:
               # gets a turn, or before anything gets posted at all.
               client = anthropic.Anthropic(timeout=budgeted_timeout(60.0, 2), max_retries=1)
               message = client.messages.create(
-                  model="claude-sonnet-5",
+                  model="claude-sonnet-5-5",
                   max_tokens=4096,
-                  thinking={"type": "disabled"},
+                  # Sonnet 5.5 rejects thinking={"type": "disabled"} with a 400;
+                  # "between_tools" is its thinking-off mode (needs effort <= high).
+                  thinking={"type": "between_tools"},
                   output_config={"effort": "medium"},
                   system=[{
                       "type": "text",
@@ -654,7 +656,7 @@ jobs:
                       "content": content_blocks
                   }]
               )
-              return message.content[0].text
+              return next(b.text for b in message.content if b.type == "text")
 
           def _flatten_content_blocks(content_blocks):
               # OpenAI/Gemini adapters have no equivalent of Anthropic's explicit
@@ -716,7 +718,9 @@ jobs:
               # Program) is generous enough to sit ahead of OpenRouter's free pool.
               # openai/gpt-oss-120b (the model previously wired in here) was
               # retired by NVIDIA (HTTP 410 "end of life" as of 2026-09-03) and is
-              # no longer callable at all. moonshotai/kimi-k3 replaces it: tested
+              # no longer callable at all. moonshotai/kimi-k3 replaced it but later returned HTTP 410
+              # and left GET /v1/models; moonshotai/kimi-k2.6 (same family, still
+              # listed) is the current pin. Original kimi-k3 test: tested
               # live against this repo's own diffs (a real merged action.yml with
               # two seeded bugs — an ((var++)) post-increment under set -e and an
               # unquoted glob in an rm -f), it answered in 25-70s, correctly
@@ -732,7 +736,7 @@ jobs:
                   max_retries=0,
               )
               response = client.chat.completions.create(
-                  model="moonshotai/kimi-k3",
+                  model="moonshotai/kimi-k2.6",
                   messages=[
                       {"role": "system", "content": system_prompt},
                       {"role": "user", "content": _flatten_content_blocks(content_blocks)},
@@ -778,8 +782,7 @@ jobs:
           # classifier that returned "User Safety: safe" instead of an actual
           # review — silently useless output, not a catchable error. These are
           # picked instead for actual code/reasoning capability: Laguna S 2.1 is
-          # a large reasoning/coding-agent model, Qwen3.8 27B is a coding-capable
-          # dense model, Gemma 4 31B is a general instruction-tuned model, and
+          # a large reasoning/coding-agent model, Gemma 4 31B is a general instruction-tuned model, and
           # Nemotron 3 Ultra is kept last (it is also the NVIDIA tier's family).
           # Several fallbacks because free slugs get retired or gated without
           # notice (GLM 5.2 and MiniMax M3 began returning 404 "unavailable for
@@ -790,7 +793,6 @@ jobs:
           # list tried in the given order (e.g. "vendor/model-a:free,vendor/model-b:free").
           DEFAULT_OPENROUTER_MODELS = [
               'poolside/laguna-s-2.1:free',
-              'qwen/qwen3.8-27b:free',
               'google/gemma-4-31b-it:free',
               'nvidia/nemotron-3-ultra-550b-a55b:free',
           ]
@@ -861,7 +863,7 @@ jobs:
           # is scarce enough to treat as an emergency-only spare rather than an
           # equal peer, then NVIDIA NIM and OpenRouter's free pool as two
           # independent free-tier safety nets. NVIDIA goes first: tested live
-          # against this repo's own diffs, moonshotai/kimi-k3 caught seeded bugs
+          # against this repo's own diffs, moonshotai/kimi-k3 (since replaced by k2.6) caught seeded bugs
           # correctly with no false positives on a clean diff (see
           # call_nvidia). OpenRouter stays as a second free-tier
           # fallback rather than being dropped for it — already proven reliable
@@ -895,9 +897,9 @@ jobs:
           # logic below.
           TIERS = {
               'anthropic': {
-                  'label': 'Claude (claude-sonnet-5)',
+                  'label': 'Claude (claude-sonnet-5-5)',
                   'available': lambda: bool(os.environ.get('ANTHROPIC_API_KEY')),
-                  'call': lambda sp, cb: (call_anthropic(sp, cb), 'Claude (claude-sonnet-5)'),
+                  'call': lambda sp, cb: (call_anthropic(sp, cb), 'Claude (claude-sonnet-5-5)'),
                   'exceptions': (anthropic.APIStatusError, anthropic.APIConnectionError),
                   'trusted': True,
               },
@@ -922,9 +924,9 @@ jobs:
                   'trusted': True,
               },
               'nvidia': {
-                  'label': 'NVIDIA NIM (kimi-k3)',
+                  'label': 'NVIDIA NIM (kimi-k2.6)',
                   'available': lambda: bool(os.environ.get('NVIDIA_API_KEY')),
-                  'call': lambda sp, cb: (call_nvidia(sp, cb), 'NVIDIA NIM (kimi-k3)'),
+                  'call': lambda sp, cb: (call_nvidia(sp, cb), 'NVIDIA NIM (kimi-k2.6)'),
                   'exceptions': (openai.APIStatusError, openai.APIConnectionError),
                   'trusted': False,
               },
