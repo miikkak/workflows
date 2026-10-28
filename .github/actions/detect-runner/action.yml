@@ -12,7 +12,9 @@ inputs:
   default-test-runner:
     description: >-
       Runner labels as a JSON array string for the test job, used for trusted
-      events. Empty if the caller has no separate test runner.
+      events. Empty if the caller has no separate test runner. For a fork PR it
+      is kept as-is only when every label is a GitHub-hosted runner name
+      (e.g. windows-latest); otherwise the fork gets ubuntu-slim.
     required: false
     default: ""
   docker-buildx:
@@ -64,10 +66,33 @@ runs:
         fi
         if [[ "${untrusted_fork}" == "true" ]]; then
           echo 'runner=["ubuntu-slim"]' >> "$GITHUB_OUTPUT"
+          # A caller whose test job needs a specific GitHub-hosted OS (e.g.
+          # windows-latest for a WinForms target) keeps it: those runners are
+          # ephemeral and hold no self-hosted infrastructure, so they are as
+          # safe for a fork as ubuntu-slim. Only keep it when every label is
+          # GitHub-hosted - one self-hosted label (or a custom one) and the
+          # override below still applies.
+          hosted_re='^(ubuntu|windows|macos)-(latest|slim|[0-9]+(\.[0-9]+)?)(-(arm|intel|large|xlarge))*$'
+          github_hosted=false
+          if [[ -n "${DEFAULT_TEST_RUNNER}" ]]; then
+            github_hosted=true
+            IFS=',' read -r -a labels <<< "${DEFAULT_TEST_RUNNER//[\[\]\" ]/}"
+            for label in "${labels[@]}"; do
+              # Exact GitHub-hosted names (ubuntu-latest, ubuntu-24.04-arm,
+              # windows-2025, macos-15-xlarge, ...), not a bare prefix match,
+              # so a custom self-hosted label like ubuntu-selfhosted still
+              # gets overridden.
+              if [[ ! "${label}" =~ ${hosted_re} ]]; then
+                github_hosted=false
+              fi
+            done
+          fi
           # ubuntu-slim can't do container builds - an untrusted fork's
           # docker-buildx test job needs the full ubuntu-latest image, not
           # the ephemeral-but-incapable slim one.
-          if [[ "${DOCKER_BUILDX}" == "true" ]]; then
+          if [[ "${github_hosted}" == "true" ]]; then
+            echo "test-runner=${DEFAULT_TEST_RUNNER}" >> "$GITHUB_OUTPUT"
+          elif [[ "${DOCKER_BUILDX}" == "true" ]]; then
             echo 'test-runner=["ubuntu-latest"]' >> "$GITHUB_OUTPUT"
           else
             echo 'test-runner=["ubuntu-slim"]' >> "$GITHUB_OUTPUT"

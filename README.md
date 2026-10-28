@@ -139,7 +139,11 @@ drift.
   untrusted fork PRs (`github.event.pull_request.head.repo.full_name != github.repository`) to
   ephemeral GitHub-hosted `ubuntu-slim` runners instead of self-hosted infrastructure, regardless
   of what the consumer repo's own `runner` input says - this can't be overridden by a fork PR,
-  by design.
+  by design. The one exception is `ci-cd.yml`'s `test-runner`: if every label in it is a
+  GitHub-hosted runner name (`windows-latest`, `macos-15`, `ubuntu-24.04-arm`, ...), a fork PR keeps
+  it, since those are ephemeral and hold no self-hosted infrastructure. Any self-hosted or custom
+  label (including look-alikes such as `ubuntu-selfhosted`) still falls back to `ubuntu-slim`. The
+  logic lives in the shared `.github/actions/detect-runner` composite action.
 - Workflow-to-workflow pins use a commit SHA with a trailing `# main`/`# vX.Y.Z` comment
   (`uses: actions/checkout@<sha> # v7`) so the human-readable ref stays visible next to the pin
   Renovate is actually tracking.
