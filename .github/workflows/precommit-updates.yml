@@ -24,6 +24,13 @@ on: # yamllint disable-line rule:truthy
         description: Branch to base the update PR on
         type: string
         default: main
+      autoupdate-exclude-repos:
+        description: >-
+          Whitespace/comma-separated repo URL suffixes that `pre-commit autoupdate` must
+          never bump. Defaults to scop/pre-commit-shfmt, whose pin must match the shfmt
+          bundled in the Super-Linter image (enforced by super-linter.yml).
+        type: string
+        default: scop/pre-commit-shfmt
 
 concurrency:
   group: precommit-updates
@@ -44,6 +51,7 @@ jobs:
       HADOLINT_VERSION: v2.12.0
       PYTHON_VERSION: ${{ inputs.python-version || '3.14' }}
       INSTALL_HADOLINT: ${{ inputs.install-hadolint == true && 'true' || 'false' }}
+      EXCLUDE_REPOS: ${{ inputs.autoupdate-exclude-repos || 'scop/pre-commit-shfmt' }}
 
     steps:
       - name: Checkout code
@@ -88,9 +96,40 @@ jobs:
       - name: Check for hook updates
         id: check
         run: |
+          set -Eeuo pipefail
           echo "Checking for pre-commit hook updates..."
 
-          pre-commit autoupdate > update-output.txt 2>&1 || true
+          # Build --repo args from every remote repo in the config except the
+          # excluded ones (e.g. scop/pre-commit-shfmt, which is pinned to the
+          # shfmt bundled in the Super-Linter image, not "latest").
+          repo_args=()
+          normalize() {
+            local u="${1%/}"
+            printf '%s' "${u%.git}"
+          }
+          IFS=$' \t\n,' read -r -d '' -a excludes < <(printf '%s' "$EXCLUDE_REPOS") || true
+          while read -r url; do
+            [[ "$url" == local || "$url" == meta ]] && continue
+            norm="$(normalize "$url")"
+            skip=false
+            for ex in "${excludes[@]}"; do
+              ex="$(normalize "$ex")"
+              if [[ "$norm" == "$ex" || "$norm" == */"$ex" || "$norm" == *:"$ex" ]]; then
+                skip=true
+                echo "Skipping excluded repo: $url"
+              fi
+            done
+            [[ "$skip" == true ]] || repo_args+=(--repo "$url")
+          done < <(
+            sed -nE "s/^[[:space:]]*-?[[:space:]]*repo:[[:space:]]*[\"']?([^\"'[:space:]]+).*/\\1/p" \
+              .pre-commit-config.yaml | sort -u
+          )
+
+          if ((${#repo_args[@]} == 0)); then
+            echo "No updatable repos found" > update-output.txt
+          else
+            pre-commit autoupdate "${repo_args[@]}" > update-output.txt 2>&1 || true
+          fi
 
           if grep -qi "updating" update-output.txt; then
             echo "updates_available=true" >> "$GITHUB_OUTPUT"
@@ -269,6 +308,10 @@ jobs:
                   '   ```bash',
                   '   pre-commit autoupdate',
                   '   ```',
+                  '',
+                  `   Then restore the pinned \`rev\` of the excluded repos (\`${process.env.EXCLUDE_REPOS}\`):`,
+                  '   they are managed separately (the shfmt pin must match the Super-Linter image)',
+                  '   and must not be bumped by autoupdate.',
                   '',
                   '2. Test the updates:',
                   '   ```bash',

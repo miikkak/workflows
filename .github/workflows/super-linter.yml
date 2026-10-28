@@ -27,6 +27,12 @@ on: # yamllint disable-line rule:truthy
         description: Enable JSON validator
         type: boolean
         default: false
+      check-shfmt-pin:
+        description: >-
+          Fail when the scop/pre-commit-shfmt pin in .pre-commit-config.yaml differs from
+          the shfmt bundled in the Super-Linter image (no-op if the hook is absent)
+        type: boolean
+        default: true
       runner:
         description: Runner labels as a JSON array string (e.g. '["self-hosted","linux","x64","generic"]')
         type: string
@@ -44,6 +50,8 @@ jobs:
     name: Super-Linter
     runs-on: ${{ fromJson(inputs.runner || '["self-hosted","linux","x64","generic"]') }}
     timeout-minutes: 10
+    env:
+      SUPERLINTER_IMAGE: ghcr.io/super-linter/super-linter:v8.7.0
 
     steps:
       - name: Checkout code
@@ -86,9 +94,65 @@ jobs:
             fi
           } >> "$GITHUB_ENV"
 
+      # The Super-Linter image is the single source of truth for the shfmt
+      # version. pre-commit and CI must format identically, otherwise
+      # pre-commit "fixes" files into a style this job rejects (and `Lint`
+      # only runs post-merge, so main goes red). `pre-commit autoupdate` is
+      # told to skip scop/pre-commit-shfmt (see precommit-updates.yml);
+      # this check catches every other kind of drift.
+      - name: Check pre-commit shfmt pin matches Super-Linter
+        # toJSON: absent inputs (push/workflow_dispatch) are null, and
+        # `null != false` is false in Actions expressions.
+        if: toJSON(inputs.check-shfmt-pin) != 'false' && toJSON(inputs.validate-bash) != 'false'
+        run: |
+          set -Eeuo pipefail
+          config=.pre-commit-config.yaml
+          if [[ ! -f "$config" ]]; then
+            echo "No $config - skipping shfmt pin check"
+            exit 0
+          fi
+          # Same anchoring as the awk below, so commented-out repo lines don't count
+          if ! grep -qE '^[[:space:]]*-?[[:space:]]*repo:.*scop/pre-commit-shfmt' "$config"; then
+            echo "scop/pre-commit-shfmt not used - skipping shfmt pin check"
+            exit 0
+          fi
+          # rev of every scop/pre-commit-shfmt entry, wherever it sits in its block
+          mapfile -t revs < <(awk '
+            /^[[:space:]]*-?[[:space:]]*repo:/ { in_hook = ($0 ~ /scop\/pre-commit-shfmt/); next }
+            in_hook && /^[[:space:]]*rev:/ {
+              v = $0
+              sub(/^[[:space:]]*rev:[[:space:]]*/, "", v)
+              sub(/[[:space:]]*#.*$/, "", v)
+              gsub(/["\047]/, "", v)
+              print v
+              in_hook = 0
+            }
+          ' "$config")
+          entries="$(grep -cE '^[[:space:]]*-?[[:space:]]*repo:.*scop/pre-commit-shfmt' "$config" || true)"
+          if ((${#revs[@]} == 0 || ${#revs[@]} != entries)); then
+            echo "::error file=${config}::Could not read the rev of every scop/pre-commit-shfmt entry"
+            exit 1
+          fi
+          bundled="$(podman run --rm --network=none --entrypoint shfmt \
+            "$SUPERLINTER_IMAGE" --version)"
+          bundled="${bundled#v}"
+          if [[ -z "$bundled" ]]; then
+            echo "::error::Could not read shfmt version from ${SUPERLINTER_IMAGE}"
+            exit 1
+          fi
+          for rev in "${revs[@]}"; do
+            pinned="${rev#v}"
+            pinned="${pinned%-*}"
+            echo "pre-commit shfmt: ${pinned} (rev ${rev}); Super-Linter shfmt: ${bundled}"
+            if [[ "$pinned" != "$bundled" ]]; then
+              msg="shfmt drift: pre-commit pins ${pinned} but ${SUPERLINTER_IMAGE} bundles ${bundled}."
+              msg+=" Set scop/pre-commit-shfmt rev to v${bundled}-<n> (latest -<n> tag for that version)."
+              echo "::error file=${config}::${msg}"
+              exit 1
+            fi
+          done
+
       - name: Super-Linter
-        env:
-          SUPERLINTER_IMAGE: ghcr.io/super-linter/super-linter:v8.7.0
         run: |
           set -Eeuo pipefail
           # Run super-linter directly via podman instead of the Docker action.
