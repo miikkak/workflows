@@ -39,32 +39,12 @@ jobs:
     steps:
       - name: Pick runner
         id: pick
-        env:
-          EVENT_NAME: ${{ github.event_name }}
-          HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
-          BASE_REPO: ${{ github.repository }}
-          DEFAULT_RUNNER: ${{ inputs.runner || '["self-hosted","linux","generic"]' }}
-        run: |
-          set -Eeuo pipefail
-          # Untrusted only when the PR comes from an actual fork (not a
-          # branch pushed directly into this repo by us, Renovate, or
-          # Dependabot) — route those to an ephemeral GitHub-hosted runner so
-          # arbitrary PR-controlled code never touches self-hosted
-          # infrastructure. Non-pull_request events (push, release,
-          # schedule) are always trusted since only someone with write
-          # access triggers them. Deliberately not gated on repo visibility:
-          # a currently-private repo can still gain an external collaborator
-          # with read access later, who could then fork and PR - fork-origin
-          # alone is the correct, durable signal.
-          untrusted_fork=false
-          if [[ "${EVENT_NAME}" == "pull_request" && "${HEAD_REPO}" != "${BASE_REPO}" ]]; then
-            untrusted_fork=true
-          fi
-          if [[ "${untrusted_fork}" == "true" ]]; then
-            echo 'runner=["ubuntu-slim"]' >> "$GITHUB_OUTPUT"
-          else
-            echo "runner=${DEFAULT_RUNNER}" >> "$GITHUB_OUTPUT"
-          fi
+        # Fork PRs are routed off self-hosted runners; see the action for the
+        # rationale. Remote ref (not ./), since a local path in a reusable
+        # workflow resolves against the caller's workspace.
+        uses: miikkak/workflows/.github/actions/detect-runner@main
+        with:
+          default-runner: ${{ inputs.runner || '["self-hosted","linux","generic"]' }}
 
   pre-commit:
     name: pre-commit
