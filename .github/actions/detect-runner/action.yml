@@ -1,0 +1,78 @@
+---
+name: Detect runner
+description: >-
+  Pick the runner labels for a workflow's jobs, routing pull requests from
+  forks off self-hosted infrastructure. Shared by pr-check, ci-cd,
+  code-review and secret-scan so the trust rule lives in one place.
+
+inputs:
+  default-runner:
+    description: Runner labels as a JSON array string, used for trusted events.
+    required: true
+  default-test-runner:
+    description: >-
+      Runner labels as a JSON array string for the test job, used for trusted
+      events. Empty if the caller has no separate test runner.
+    required: false
+    default: ""
+  docker-buildx:
+    description: >-
+      "true" if the test job builds containers. An untrusted fork then gets
+      ubuntu-latest for the test runner, since ubuntu-slim can't do container
+      builds.
+    required: false
+    default: "false"
+
+outputs:
+  runner:
+    description: Runner labels as a JSON array string.
+    value: ${{ steps.pick.outputs.runner }}
+  test-runner:
+    description: >-
+      Test-job runner labels as a JSON array string (empty if no
+      default-test-runner was given and the run is trusted).
+    value: ${{ steps.pick.outputs.test-runner }}
+
+runs:
+  using: composite
+  steps:
+    - name: Pick runner
+      id: pick
+      shell: bash
+      env:
+        EVENT_NAME: ${{ github.event_name }}
+        HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
+        BASE_REPO: ${{ github.repository }}
+        DEFAULT_RUNNER: ${{ inputs.default-runner }}
+        DEFAULT_TEST_RUNNER: ${{ inputs.default-test-runner }}
+        DOCKER_BUILDX: ${{ inputs.docker-buildx }}
+      run: |
+        set -Eeuo pipefail
+        # Untrusted only when the PR comes from an actual fork (not a
+        # branch pushed directly into this repo by us, Renovate, or
+        # Dependabot) - route those to an ephemeral GitHub-hosted runner so
+        # arbitrary PR-controlled code never touches self-hosted
+        # infrastructure. Non-pull_request events (push, release,
+        # schedule) are always trusted since only someone with write
+        # access triggers them. Deliberately not gated on repo visibility:
+        # a currently-private repo can still gain an external collaborator
+        # with read access later, who could then fork and PR - fork-origin
+        # alone is the correct, durable signal.
+        untrusted_fork=false
+        if [[ "${EVENT_NAME}" == "pull_request" && "${HEAD_REPO}" != "${BASE_REPO}" ]]; then
+          untrusted_fork=true
+        fi
+        if [[ "${untrusted_fork}" == "true" ]]; then
+          echo 'runner=["ubuntu-slim"]' >> "$GITHUB_OUTPUT"
+          # ubuntu-slim can't do container builds - an untrusted fork's
+          # docker-buildx test job needs the full ubuntu-latest image, not
+          # the ephemeral-but-incapable slim one.
+          if [[ "${DOCKER_BUILDX}" == "true" ]]; then
+            echo 'test-runner=["ubuntu-latest"]' >> "$GITHUB_OUTPUT"
+          else
+            echo 'test-runner=["ubuntu-slim"]' >> "$GITHUB_OUTPUT"
+          fi
+        else
+          echo "runner=${DEFAULT_RUNNER}" >> "$GITHUB_OUTPUT"
+          echo "test-runner=${DEFAULT_TEST_RUNNER}" >> "$GITHUB_OUTPUT"
+        fi
