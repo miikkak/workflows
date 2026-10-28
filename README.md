@@ -75,6 +75,19 @@ nothing to attach beyond the repo's own config files (`.github/` itself, the act
 part, would have to be excluded from any such tarball to avoid duplicating what git already
 gives you).
 
+## shfmt version pin
+
+`super-linter.yml` pins the Super-Linter image (`SUPERLINTER_IMAGE`), which bundles a specific
+`shfmt`. A `scop/pre-commit-shfmt` hook running a different version formats shell differently
+and turns `Lint` red on `main`, so the image is the single source of truth:
+
+- `precommit-updates.yml` never bumps `scop/pre-commit-shfmt` (input `autoupdate-exclude-repos`,
+  default `scop/pre-commit-shfmt`).
+- `super-linter.yml` fails (input `check-shfmt-pin`, default on) when the hook's `rev`
+  (`v<version>-<n>`) doesn't match the bundled shfmt, and says which `rev` to set. Call it on
+  `pull_request` so drift is caught before merge. When the image is bumped, update the hook
+  `rev` in the same PR.
+
 ## Secret scanning
 
 Layered so no single bypass (`git commit --no-verify`, a skipped hook, a direct push) leaves a

@@ -27,6 +27,12 @@ on: # yamllint disable-line rule:truthy
         description: Enable JSON validator
         type: boolean
         default: false
+      check-shfmt-pin:
+        description: >-
+          Fail when the scop/pre-commit-shfmt pin in .pre-commit-config.yaml differs from
+          the shfmt bundled in the Super-Linter image (no-op if the hook is absent)
+        type: boolean
+        default: true
       runner:
         description: Runner labels as a JSON array string (e.g. '["self-hosted","linux","x64","generic"]')
         type: string
@@ -85,6 +91,42 @@ jobs:
               echo 'VALIDATE_JSON=true'
             fi
           } >> "$GITHUB_ENV"
+
+      # The Super-Linter image is the single source of truth for the shfmt
+      # version. pre-commit and CI must format identically, otherwise
+      # pre-commit "fixes" files into a style this job rejects (and `Lint`
+      # only runs post-merge, so main goes red). `pre-commit autoupdate` is
+      # told to skip scop/pre-commit-shfmt (see precommit-updates.yml);
+      # this check catches every other kind of drift.
+      - name: Check pre-commit shfmt pin matches Super-Linter
+        if: inputs.check-shfmt-pin != false && inputs.validate-bash != false
+        env:
+          SUPERLINTER_IMAGE: ghcr.io/super-linter/super-linter:v8.7.0
+        run: |
+          set -Eeuo pipefail
+          config=.pre-commit-config.yaml
+          if [[ ! -f "$config" ]]; then
+            echo "No $config - skipping shfmt pin check"
+            exit 0
+          fi
+          rev="$(grep -A1 -E 'repo:.*scop/pre-commit-shfmt' "$config" \
+            | sed -nE 's/^[[:space:]]*rev:[[:space:]]*"?([^"[:space:]]+)"?.*/\1/p' | head -n1)"
+          if [[ -z "$rev" ]]; then
+            echo "scop/pre-commit-shfmt not used - skipping shfmt pin check"
+            exit 0
+          fi
+          pinned="${rev#v}"
+          pinned="${pinned%-*}"
+          bundled="$(podman run --rm --network=none --entrypoint shfmt \
+            "$SUPERLINTER_IMAGE" --version)"
+          bundled="${bundled#v}"
+          echo "pre-commit shfmt: ${pinned} (rev ${rev}); Super-Linter shfmt: ${bundled}"
+          if [[ "$pinned" != "$bundled" ]]; then
+            msg="shfmt drift: pre-commit pins ${pinned} but ${SUPERLINTER_IMAGE} bundles ${bundled}."
+            msg+=" Set scop/pre-commit-shfmt rev to v${bundled}-<n> (latest -<n> tag for that version)."
+            echo "::error file=${config}::${msg}"
+            exit 1
+          fi
 
       - name: Super-Linter
         env:
