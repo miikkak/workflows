@@ -32,29 +32,12 @@ jobs:
     steps:
       - name: Pick runner
         id: pick
-        env:
-          EVENT_NAME: ${{ github.event_name }}
-          HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
-          BASE_REPO: ${{ github.repository }}
-          DEFAULT_RUNNER: ${{ inputs.runner || '["self-hosted","linux","generic"]' }}
-        run: |
-          set -Eeuo pipefail
-          # See pr-check.yml's detect-runner for the full rationale: untrusted
-          # only when the PR comes from an actual fork, never for a branch
-          # pushed directly into this repo or a non-pull_request event.
-          # Secrets are already stripped by GitHub for fork-triggered
-          # pull_request runs regardless (no review tier ends up available below
-          # and the job exits cleanly) — this guards the separate risk of PR-
-          # controlled code executing on self-hosted infrastructure at all.
-          untrusted_fork=false
-          if [[ "${EVENT_NAME}" == "pull_request" && "${HEAD_REPO}" != "${BASE_REPO}" ]]; then
-            untrusted_fork=true
-          fi
-          if [[ "${untrusted_fork}" == "true" ]]; then
-            echo 'runner=["ubuntu-slim"]' >> "$GITHUB_OUTPUT"
-          else
-            echo "runner=${DEFAULT_RUNNER}" >> "$GITHUB_OUTPUT"
-          fi
+        # Fork PRs are routed off self-hosted runners; see the action for the
+        # rationale. Remote ref (not ./), since a local path in a reusable
+        # workflow resolves against the caller's workspace.
+        uses: miikkak/workflows/.github/actions/detect-runner@main
+        with:
+          default-runner: ${{ inputs.runner || '["self-hosted","linux","generic"]' }}
 
   review:
     name: AI Code Review
