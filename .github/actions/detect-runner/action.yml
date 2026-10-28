@@ -12,7 +12,9 @@ inputs:
   default-test-runner:
     description: >-
       Runner labels as a JSON array string for the test job, used for trusted
-      events. Empty if the caller has no separate test runner.
+      events. Empty if the caller has no separate test runner. For a fork PR it
+      is kept as-is only when every label is a GitHub-hosted runner name
+      (e.g. windows-latest); otherwise the fork gets ubuntu-slim.
     required: false
     default: ""
   docker-buildx:
@@ -64,10 +66,51 @@ runs:
         fi
         if [[ "${untrusted_fork}" == "true" ]]; then
           echo 'runner=["ubuntu-slim"]' >> "$GITHUB_OUTPUT"
+          # A caller whose test job needs a specific GitHub-hosted OS (e.g.
+          # windows-latest for a WinForms target) keeps it: those runners are
+          # ephemeral and hold no self-hosted infrastructure, so they are as
+          # safe for a fork as ubuntu-slim. Only keep it when every label is
+          # GitHub-hosted - one self-hosted label (or a custom one) and the
+          # override below still applies.
+          github_hosted=false
+          has_slim=false
+          hosted_json=""
+          # Strip all whitespace (incl. newlines from a block-scalar input),
+          # then split the JSON array into its labels.
+          compact="$(printf '%s' "${DEFAULT_TEST_RUNNER}" | tr -d '[:space:]')"
+          IFS=',' read -r -a labels <<< "${compact//[\[\]\"]/}"
+          if ((${#labels[@]} > 0)); then
+            github_hosted=true
+            for label in "${labels[@]}"; do
+              hosted_json+="${hosted_json:+,}\"${label}\""
+              # Explicit allowlist of GitHub-hosted names, not a pattern, so a
+              # self-hosted runner that merely carries a similar label (e.g.
+              # ubuntu-selfhosted, ubuntu-24, macos-99-large) still gets
+              # overridden. An unlisted new hosted label fails safe to
+              # ubuntu-slim until it is added here.
+              case "${label}" in
+                ubuntu-slim) has_slim=true ;;
+                ubuntu-latest | ubuntu-22.04 | ubuntu-24.04 | ubuntu-22.04-arm | ubuntu-24.04-arm) ;;
+                windows-latest | windows-2022 | windows-2025 | windows-2025-vs2026 | windows-11-arm) ;;
+                macos-latest | macos-latest-large | macos-latest-xlarge) ;;
+                macos-14 | macos-14-large | macos-14-xlarge) ;;
+                macos-15 | macos-15-intel | macos-15-large | macos-15-xlarge) ;;
+                macos-26 | macos-26-intel | macos-26-large | macos-26-xlarge) ;;
+                *) github_hosted=false ;;
+              esac
+            done
+          fi
           # ubuntu-slim can't do container builds - an untrusted fork's
           # docker-buildx test job needs the full ubuntu-latest image, not
-          # the ephemeral-but-incapable slim one.
-          if [[ "${DOCKER_BUILDX}" == "true" ]]; then
+          # the ephemeral-but-incapable slim one, even if the caller asked
+          # for slim.
+          if [[ "${github_hosted}" == "true" && "${DOCKER_BUILDX}" == "true" && "${has_slim}" == "true" ]]; then
+            echo 'test-runner=["ubuntu-latest"]' >> "$GITHUB_OUTPUT"
+          elif [[ "${github_hosted}" == "true" ]]; then
+            # Rebuilt from the validated labels, so the output is compact
+            # single-line JSON whatever shape the input had.
+            echo "test-runner=[${hosted_json}]" >> "$GITHUB_OUTPUT"
+          elif [[ "${DOCKER_BUILDX}" == "true" ]]; then
             echo 'test-runner=["ubuntu-latest"]' >> "$GITHUB_OUTPUT"
           else
             echo 'test-runner=["ubuntu-slim"]' >> "$GITHUB_OUTPUT"
