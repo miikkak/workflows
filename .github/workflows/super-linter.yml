@@ -50,6 +50,8 @@ jobs:
     name: Super-Linter
     runs-on: ${{ fromJson(inputs.runner || '["self-hosted","linux","x64","generic"]') }}
     timeout-minutes: 10
+    env:
+      SUPERLINTER_IMAGE: ghcr.io/super-linter/super-linter:v8.7.0
 
     steps:
       - name: Checkout code
@@ -99,9 +101,9 @@ jobs:
       # told to skip scop/pre-commit-shfmt (see precommit-updates.yml);
       # this check catches every other kind of drift.
       - name: Check pre-commit shfmt pin matches Super-Linter
-        if: inputs.check-shfmt-pin != false && inputs.validate-bash != false
-        env:
-          SUPERLINTER_IMAGE: ghcr.io/super-linter/super-linter:v8.7.0
+        # toJSON: absent inputs (push/workflow_dispatch) are null, and
+        # `null != false` is false in Actions expressions.
+        if: toJSON(inputs.check-shfmt-pin) != 'false' && toJSON(inputs.validate-bash) != 'false'
         run: |
           set -Eeuo pipefail
           config=.pre-commit-config.yaml
@@ -109,17 +111,35 @@ jobs:
             echo "No $config - skipping shfmt pin check"
             exit 0
           fi
-          rev="$(grep -A1 -E 'repo:.*scop/pre-commit-shfmt' "$config" \
-            | sed -nE 's/^[[:space:]]*rev:[[:space:]]*"?([^"[:space:]]+)"?.*/\1/p' | head -n1)"
-          if [[ -z "$rev" ]]; then
+          if ! grep -qE 'repo:.*scop/pre-commit-shfmt' "$config"; then
             echo "scop/pre-commit-shfmt not used - skipping shfmt pin check"
             exit 0
+          fi
+          # rev of the scop/pre-commit-shfmt entry, wherever it sits in the block
+          rev="$(awk '
+            /^[[:space:]]*-?[[:space:]]*repo:/ { in_hook = ($0 ~ /scop\/pre-commit-shfmt/); next }
+            in_hook && /^[[:space:]]*rev:/ {
+              v = $0
+              sub(/^[[:space:]]*rev:[[:space:]]*/, "", v)
+              sub(/[[:space:]]*#.*$/, "", v)
+              gsub(/["\047]/, "", v)
+              print v
+              exit
+            }
+          ' "$config")"
+          if [[ -z "$rev" ]]; then
+            echo "::error file=${config}::Could not read the rev of scop/pre-commit-shfmt"
+            exit 1
           fi
           pinned="${rev#v}"
           pinned="${pinned%-*}"
           bundled="$(podman run --rm --network=none --entrypoint shfmt \
             "$SUPERLINTER_IMAGE" --version)"
           bundled="${bundled#v}"
+          if [[ -z "$bundled" ]]; then
+            echo "::error::Could not read shfmt version from ${SUPERLINTER_IMAGE}"
+            exit 1
+          fi
           echo "pre-commit shfmt: ${pinned} (rev ${rev}); Super-Linter shfmt: ${bundled}"
           if [[ "$pinned" != "$bundled" ]]; then
             msg="shfmt drift: pre-commit pins ${pinned} but ${SUPERLINTER_IMAGE} bundles ${bundled}."
@@ -129,8 +149,6 @@ jobs:
           fi
 
       - name: Super-Linter
-        env:
-          SUPERLINTER_IMAGE: ghcr.io/super-linter/super-linter:v8.7.0
         run: |
           set -Eeuo pipefail
           # Run super-linter directly via podman instead of the Docker action.

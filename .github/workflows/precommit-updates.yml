@@ -102,18 +102,25 @@ jobs:
           # excluded ones (e.g. scop/pre-commit-shfmt, which is pinned to the
           # shfmt bundled in the Super-Linter image, not "latest").
           repo_args=()
-          read -ra excludes <<< "${EXCLUDE_REPOS//,/ }"
+          normalize() {
+            local u="${1%/}"
+            printf '%s' "${u%.git}"
+          }
+          IFS=$' \t\n,' read -r -d '' -a excludes < <(printf '%s' "$EXCLUDE_REPOS") || true
           while read -r url; do
+            [[ "$url" == local || "$url" == meta ]] && continue
+            norm="$(normalize "$url")"
             skip=false
             for ex in "${excludes[@]}"; do
-              if [[ "$url" == *"$ex" ]]; then
+              ex="$(normalize "$ex")"
+              if [[ "$norm" == "$ex" || "$norm" == */"$ex" || "$norm" == *:"$ex" ]]; then
                 skip=true
                 echo "Skipping excluded repo: $url"
               fi
             done
             [[ "$skip" == true ]] || repo_args+=(--repo "$url")
           done < <(
-            sed -nE 's/^[[:space:]]*-?[[:space:]]*repo:[[:space:]]*(https?:[^[:space:]]+).*/\1/p' \
+            sed -nE "s/^[[:space:]]*-?[[:space:]]*repo:[[:space:]]*[\"']?([^\"'[:space:]]+).*/\\1/p" \
               .pre-commit-config.yaml | sort -u
           )
 
