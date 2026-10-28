@@ -115,8 +115,8 @@ jobs:
             echo "scop/pre-commit-shfmt not used - skipping shfmt pin check"
             exit 0
           fi
-          # rev of the scop/pre-commit-shfmt entry, wherever it sits in the block
-          rev="$(awk '
+          # rev of every scop/pre-commit-shfmt entry, wherever it sits in its block
+          mapfile -t revs < <(awk '
             /^[[:space:]]*-?[[:space:]]*repo:/ { in_hook = ($0 ~ /scop\/pre-commit-shfmt/); next }
             in_hook && /^[[:space:]]*rev:/ {
               v = $0
@@ -124,15 +124,14 @@ jobs:
               sub(/[[:space:]]*#.*$/, "", v)
               gsub(/["\047]/, "", v)
               print v
-              exit
+              in_hook = 0
             }
-          ' "$config")"
-          if [[ -z "$rev" ]]; then
-            echo "::error file=${config}::Could not read the rev of scop/pre-commit-shfmt"
+          ' "$config")
+          entries="$(grep -cE 'repo:.*scop/pre-commit-shfmt' "$config")"
+          if ((${#revs[@]} == 0 || ${#revs[@]} != entries)); then
+            echo "::error file=${config}::Could not read the rev of every scop/pre-commit-shfmt entry"
             exit 1
           fi
-          pinned="${rev#v}"
-          pinned="${pinned%-*}"
           bundled="$(podman run --rm --network=none --entrypoint shfmt \
             "$SUPERLINTER_IMAGE" --version)"
           bundled="${bundled#v}"
@@ -140,13 +139,17 @@ jobs:
             echo "::error::Could not read shfmt version from ${SUPERLINTER_IMAGE}"
             exit 1
           fi
-          echo "pre-commit shfmt: ${pinned} (rev ${rev}); Super-Linter shfmt: ${bundled}"
-          if [[ "$pinned" != "$bundled" ]]; then
-            msg="shfmt drift: pre-commit pins ${pinned} but ${SUPERLINTER_IMAGE} bundles ${bundled}."
-            msg+=" Set scop/pre-commit-shfmt rev to v${bundled}-<n> (latest -<n> tag for that version)."
-            echo "::error file=${config}::${msg}"
-            exit 1
-          fi
+          for rev in "${revs[@]}"; do
+            pinned="${rev#v}"
+            pinned="${pinned%-*}"
+            echo "pre-commit shfmt: ${pinned} (rev ${rev}); Super-Linter shfmt: ${bundled}"
+            if [[ "$pinned" != "$bundled" ]]; then
+              msg="shfmt drift: pre-commit pins ${pinned} but ${SUPERLINTER_IMAGE} bundles ${bundled}."
+              msg+=" Set scop/pre-commit-shfmt rev to v${bundled}-<n> (latest -<n> tag for that version)."
+              echo "::error file=${config}::${msg}"
+              exit 1
+            fi
+          done
 
       - name: Super-Linter
         run: |
