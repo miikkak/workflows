@@ -96,6 +96,7 @@ jobs:
       - name: Check for hook updates
         id: check
         run: |
+          set -Eeuo pipefail
           echo "Checking for pre-commit hook updates..."
 
           # Build --repo args from every remote repo in the config except the

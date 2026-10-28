@@ -111,7 +111,8 @@ jobs:
             echo "No $config - skipping shfmt pin check"
             exit 0
           fi
-          if ! grep -qE 'repo:.*scop/pre-commit-shfmt' "$config"; then
+          # Same anchoring as the awk below, so commented-out repo lines don't count
+          if ! grep -qE '^[[:space:]]*-?[[:space:]]*repo:.*scop/pre-commit-shfmt' "$config"; then
             echo "scop/pre-commit-shfmt not used - skipping shfmt pin check"
             exit 0
           fi
@@ -127,7 +128,7 @@ jobs:
               in_hook = 0
             }
           ' "$config")
-          entries="$(grep -cE 'repo:.*scop/pre-commit-shfmt' "$config")"
+          entries="$(grep -cE '^[[:space:]]*-?[[:space:]]*repo:.*scop/pre-commit-shfmt' "$config" || true)"
           if ((${#revs[@]} == 0 || ${#revs[@]} != entries)); then
             echo "::error file=${config}::Could not read the rev of every scop/pre-commit-shfmt entry"
             exit 1
