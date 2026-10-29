@@ -32,7 +32,13 @@ permissions:
 jobs:
   detect-runner:
     name: Detect Runner
-    runs-on: ubuntu-slim
+    # Self-hosted unless the PR is from a fork: a hosted job bills a whole
+    # minute even though this one takes ~3s, which dominated Actions usage.
+    runs-on: >-
+      ${{ github.event_name == 'pull_request'
+      && github.event.pull_request.head.repo.full_name != github.repository
+      && fromJson('["ubuntu-slim"]')
+      || fromJson(inputs.runner || '["self-hosted","linux","generic"]') }}
     timeout-minutes: 2
     outputs:
       runner: ${{ steps.pick.outputs.runner }}
