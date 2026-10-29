@@ -19,13 +19,12 @@ languages:
 repos:
   # Stock repos without a PR workflow: no ruleset, so no labels, no
   # review-approval permission to manage either. dotfiles is chezmoi-managed
-  # with direct pushes by design; claude-memory is automation-only storage;
-  # renovate-config only hosts Renovate bot config.
+  # with direct pushes by design; claude-memory is automation-only storage.
+  # (renovate-config used to be exempt as a config-only repo; it now runs the
+  # standard PR workflows and takes the default ruleset like everyone else.)
   dotfiles:
     skip: [ruleset, labels, workflow_permissions]
   claude-memory:
-    skip: [ruleset, labels, workflow_permissions]
-  renovate-config:
     skip: [ruleset, labels, workflow_permissions]
 
   # The shared-workflows repo runs its own workflows directly, not through
