@@ -51,7 +51,7 @@ jobs:
     runs-on: ${{ fromJson(inputs.runner || '["self-hosted","linux","x64","generic"]') }}
     timeout-minutes: 10
     env:
-      SUPERLINTER_IMAGE: ghcr.io/super-linter/super-linter:v8.7.0
+      SUPERLINTER_IMAGE: ghcr.io/super-linter/super-linter:v9.0.0
 
     steps:
       - name: Checkout code
@@ -68,7 +68,7 @@ jobs:
           # Unmentioned validators simply don't run when any VALIDATE_* is set to true.
           #
           # shfmt formatting is controlled entirely by each repo's own
-          # .editorconfig (super-linter v8.7.0's SHFMT_OPTIONS is a hardcoded
+          # .editorconfig (super-linter v9.0.0's SHFMT_OPTIONS is a hardcoded
           # --apply-ignore, not a configurable passthrough - there is no
           # SHELL_SHFMT_OPTS env var it reads, confirmed by inspecting
           # /action/lib/globals/linterCommandsOptions.sh in the image).
