@@ -33,10 +33,23 @@ on: # yamllint disable-line rule:truthy
           the shfmt bundled in the Super-Linter image (no-op if the hook is absent)
         type: boolean
         default: true
+      sync-shfmt-pin:
+        description: >-
+          On a Renovate pull_request, rewrite a drifted scop/pre-commit-shfmt rev to the
+          Super-Linter image's shfmt and push the fix to the PR branch (needs the
+          PULL_REQUEST_TOKEN secret so checks re-run); otherwise drift just fails the check
+        type: boolean
+        default: true
       runner:
         description: Runner labels as a JSON array string (e.g. '["self-hosted","linux","x64","generic"]')
         type: string
         default: '["self-hosted","linux","x64","generic"]'
+    secrets:
+      PULL_REQUEST_TOKEN:
+        description: >-
+          PAT used to push the shfmt pin fix to a Renovate PR branch. A push made with
+          GITHUB_TOKEN would not re-trigger checks, so without this secret drift only fails.
+        required: false
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -59,6 +72,10 @@ jobs:
         with:
           fetch-depth: 0
           token: ${{ github.token }}
+          # Keep GITHUB_TOKEN out of git config: its http.extraheader would
+          # override the PAT the shfmt pin sync pushes with, and a GITHUB_TOKEN
+          # push does not re-trigger checks. Nothing else here needs git auth.
+          persist-credentials: false
 
       - name: Configure validators
         run: |
@@ -104,6 +121,14 @@ jobs:
         # toJSON: absent inputs (push/workflow_dispatch) are null, and
         # `null != false` is false in Actions expressions.
         if: toJSON(inputs.check-shfmt-pin) != 'false' && toJSON(inputs.validate-bash) != 'false'
+        env:
+          SYNC_PIN: ${{ toJSON(inputs.sync-shfmt-pin) }}
+          EVENT_NAME: ${{ github.event_name }}
+          PR_AUTHOR: ${{ github.event.pull_request.user.login }}
+          HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
+          HEAD_REF: ${{ github.event.pull_request.head.ref }}
+          REPO: ${{ github.repository }}
+          PUSH_TOKEN: ${{ secrets.PULL_REQUEST_TOKEN }}
         run: |
           set -Eeuo pipefail
           config=.pre-commit-config.yaml
@@ -140,17 +165,64 @@ jobs:
             echo "::error::Could not read shfmt version from ${SUPERLINTER_IMAGE}"
             exit 1
           fi
+          drift=false
           for rev in "${revs[@]}"; do
             pinned="${rev#v}"
             pinned="${pinned%-*}"
             echo "pre-commit shfmt: ${pinned} (rev ${rev}); Super-Linter shfmt: ${bundled}"
-            if [[ "$pinned" != "$bundled" ]]; then
-              msg="shfmt drift: pre-commit pins ${pinned} but ${SUPERLINTER_IMAGE} bundles ${bundled}."
-              msg+=" Set scop/pre-commit-shfmt rev to v${bundled}-<n> (latest -<n> tag for that version)."
-              echo "::error file=${config}::${msg}"
-              exit 1
-            fi
+            [[ "$pinned" == "$bundled" ]] || drift=true
           done
+          [[ "$drift" == true ]] || exit 0
+
+          msg="shfmt drift: pre-commit pins a different shfmt than ${SUPERLINTER_IMAGE} (${bundled})."
+          msg+=" Set scop/pre-commit-shfmt rev to v${bundled}-<n> (latest -<n> tag for that version)."
+
+          # Auto-fix only Renovate's same-repo PRs (never a human's branch or a
+          # fork), and only with a PAT: a push made with GITHUB_TOKEN does not
+          # re-trigger workflows, which would leave the PR without checks.
+          if [[ "$SYNC_PIN" == 'false' || "$EVENT_NAME" != 'pull_request' \
+            || "$PR_AUTHOR" != 'renovate[bot]' || "$HEAD_REPO" != "$REPO" \
+            || -z "$PUSH_TOKEN" ]]; then
+            echo "::error file=${config}::${msg}"
+            exit 1
+          fi
+
+          tag="$(git ls-remote --tags --refs https://github.com/scop/pre-commit-shfmt \
+            "refs/tags/v${bundled}-*" | sed 's|.*refs/tags/||' | sort -V | tail -n1)"
+          if [[ -z "$tag" ]]; then
+            echo "::error file=${config}::No scop/pre-commit-shfmt tag for shfmt ${bundled}. ${msg}"
+            exit 1
+          fi
+
+          # Work on the PR branch itself, not the detached merge ref
+          remote="https://x-access-token:${PUSH_TOKEN}@github.com/${REPO}.git"
+          git fetch --no-tags "$remote" "$HEAD_REF"
+          git checkout -B shfmt-pin-sync FETCH_HEAD
+          # Replace the whole rev scalar (a tag or a SHA), keeping its quotes
+          # and any trailing comment
+          awk -v tag="$tag" '
+            /^[[:space:]]*-?[[:space:]]*repo:/ { in_hook = ($0 ~ /scop\/pre-commit-shfmt/); print; next }
+            in_hook && /^[[:space:]]*rev:/ {
+              match($0, /rev:[[:space:]]*["\047]?/)
+              head = substr($0, 1, RSTART + RLENGTH - 1)
+              rest = substr($0, RSTART + RLENGTH)
+              sub(/^[^"\047#[:space:]]+/, tag, rest)
+              print head rest
+              in_hook = 0
+              next
+            }
+            { print }
+          ' "$config" > "${RUNNER_TEMP}/pre-commit-config.new"
+          cat "${RUNNER_TEMP}/pre-commit-config.new" > "$config"
+          if git diff --quiet -- "$config"; then
+            echo "::error file=${config}::Could not rewrite the shfmt rev. ${msg}"
+            exit 1
+          fi
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git commit -m "chore(pre-commit): sync shfmt pin to ${tag} (Super-Linter ${bundled})" "$config"
+          git push "$remote" "HEAD:refs/heads/${HEAD_REF}"
+          echo "::notice::Synced scop/pre-commit-shfmt to ${tag}; the push re-triggers checks on the PR."
 
       - name: Super-Linter
         run: |
