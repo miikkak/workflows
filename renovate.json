@@ -7,9 +7,22 @@
       "matchManagers": ["github-actions"],
       "matchPackageNames": ["miikkak/workflows"],
       "enabled": false
+    },
+    {
+      "description": "Super-Linter image bumps change the bundled shfmt, so they stay manual-review (no automerge); release:none because they only touch CI tooling. Consumers get their shfmt pin synced by super-linter.yml on the digest PR.",
+      "matchDepNames": ["ghcr.io/super-linter/super-linter"],
+      "automerge": false,
+      "labels": ["release:none"]
     }
   ],
   "regexManagers": [
+    {
+      "fileMatch": ["^\\.github/workflows/super-linter\\.yml$"],
+      "matchStrings": [
+        "SUPERLINTER_IMAGE: (?<depName>ghcr\\.io/super-linter/super-linter):(?<currentValue>v[0-9.]+)"
+      ],
+      "datasourceTemplate": "docker"
+    },
     {
       "fileMatch": ["^\\.github/workflows/code-review\\.yml$"],
       "matchStrings": ["ANTHROPIC_VERSION: \"(?<currentValue>[^\"]+)\""],

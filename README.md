@@ -85,8 +85,15 @@ and turns `Lint` red on `main`, so the image is the single source of truth:
   default `scop/pre-commit-shfmt`).
 - `super-linter.yml` fails (input `check-shfmt-pin`, default on) when the hook's `rev`
   (`v<version>-<n>`) doesn't match the bundled shfmt, and says which `rev` to set. Call it on
-  `pull_request` so drift is caught before merge. When the image is bumped, update the hook
-  `rev` in the same PR.
+  `pull_request` so drift is caught before merge.
+- On a pull request opened by `renovate[bot]` from a branch in the same repo, the check fixes
+  the drift itself (input `sync-shfmt-pin`, default on): it rewrites the hook `rev` to the
+  latest `v<version>-<n>` tag and pushes the commit to the PR branch. The push needs the
+  `PULL_REQUEST_TOKEN` secret (`secrets: inherit` passes it); a push with `GITHUB_TOKEN` would
+  not re-run checks, so without the secret drift just fails. Other PRs are never rewritten.
+- Renovate tracks `SUPERLINTER_IMAGE` (regex manager in `renovate.json`, manual review), and
+  `renovate-config` stops Renovate from bumping the hook directly. So an image bump lands as a
+  `workflows` PR, and each consumer's digest PR carries the matching pin fix.
 
 ## Secret scanning
 
