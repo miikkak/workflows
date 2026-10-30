@@ -72,6 +72,10 @@ jobs:
         with:
           fetch-depth: 0
           token: ${{ github.token }}
+          # Keep GITHUB_TOKEN out of git config: its http.extraheader would
+          # override the PAT the shfmt pin sync pushes with, and a GITHUB_TOKEN
+          # push does not re-trigger checks. Nothing else here needs git auth.
+          persist-credentials: false
 
       - name: Configure validators
         run: |
@@ -191,11 +195,22 @@ jobs:
           fi
 
           # Work on the PR branch itself, not the detached merge ref
-          git fetch --no-tags origin "$HEAD_REF"
+          remote="https://x-access-token:${PUSH_TOKEN}@github.com/${REPO}.git"
+          git fetch --no-tags "$remote" "$HEAD_REF"
           git checkout -B shfmt-pin-sync FETCH_HEAD
+          # Replace the whole rev scalar (a tag or a SHA), keeping its quotes
+          # and any trailing comment
           awk -v tag="$tag" '
             /^[[:space:]]*-?[[:space:]]*repo:/ { in_hook = ($0 ~ /scop\/pre-commit-shfmt/); print; next }
-            in_hook && /^[[:space:]]*rev:/ { sub(/v[0-9][0-9.]*-[0-9]+/, tag); in_hook = 0 }
+            in_hook && /^[[:space:]]*rev:/ {
+              match($0, /rev:[[:space:]]*["\047]?/)
+              head = substr($0, 1, RSTART + RLENGTH - 1)
+              rest = substr($0, RSTART + RLENGTH)
+              sub(/^[^"\047#[:space:]]+/, tag, rest)
+              print head rest
+              in_hook = 0
+              next
+            }
             { print }
           ' "$config" > "${RUNNER_TEMP}/pre-commit-config.new"
           cat "${RUNNER_TEMP}/pre-commit-config.new" > "$config"
@@ -206,7 +221,7 @@ jobs:
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
           git commit -m "chore(pre-commit): sync shfmt pin to ${tag} (Super-Linter ${bundled})" "$config"
-          git push "https://x-access-token:${PUSH_TOKEN}@github.com/${REPO}.git" "HEAD:refs/heads/${HEAD_REF}"
+          git push "$remote" "HEAD:refs/heads/${HEAD_REF}"
           echo "::notice::Synced scop/pre-commit-shfmt to ${tag}; the push re-triggers checks on the PR."
 
       - name: Super-Linter
