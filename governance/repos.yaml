@@ -50,3 +50,12 @@ repos:
         required_status_checks:
           checks:
             "Build Container Image": {integration_id: 15368}
+
+  # Gentoo overlay: ebuilds and scripts only, no test suite or release
+  # pipeline, so there is no ci-cd workflow to require.
+  gentoo-overlay:
+    config:
+      ruleset:
+        required_status_checks:
+          checks:
+            "ci-cd / Run Test Suite": null
