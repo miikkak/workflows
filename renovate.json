@@ -1,6 +1,7 @@
 {
   "$schema": "https://docs.renovatebot.com/renovate-schema.json",
   "extends": ["github>miikkak/renovate-config"],
+  "rebaseWhen": "behind-base-branch",
   "packageRules": [
     {
       "description": "Don't pin ci-cd.yml's verify-* jobs' self-referential miikkak/workflows@main refs to a SHA. Unlike a normal external action, main here is this same repo's own branch — pinning would create a perpetual re-pin PR loop, since every merge (including the pin-update PR's own merge) immediately advances main past whatever was just pinned. @main is deliberately floating; see #156/#157.",
