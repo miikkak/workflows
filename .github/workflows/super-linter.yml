@@ -64,7 +64,7 @@ jobs:
     runs-on: ${{ fromJson(inputs.runner || '["self-hosted","linux","x64","generic"]') }}
     timeout-minutes: 10
     env:
-      SUPERLINTER_IMAGE: ghcr.io/super-linter/super-linter:v8.7.0
+      SUPERLINTER_IMAGE: ghcr.io/super-linter/super-linter:v9.0.0
 
     steps:
       - name: Checkout code
