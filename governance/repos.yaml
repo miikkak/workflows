@@ -27,6 +27,31 @@ repos:
   claude-memory:
     skip: [ruleset, labels, workflow_permissions]
 
+  # Repos that keep strict mode (the default is relaxed, see defaults.yaml).
+  # A merge there can combine with another open PR into a broken main that each
+  # PR alone would not show, and in these repos main reaches servers.
+  #
+  # Config repos deployed from release tags: remove each pin once its
+  # run-tests.sh has been reviewed against its deploy path.
+  dns:
+    config: {ruleset: {required_status_checks: {strict: true}}}
+  email-server:
+    config: {ruleset: {required_status_checks: {strict: true}}}
+  fastly-vcl:
+    config: {ruleset: {required_status_checks: {strict: true}}}
+  grafana:
+    config: {ruleset: {required_status_checks: {strict: true}}}
+  server-setup:
+    config: {ruleset: {required_status_checks: {strict: true}}}
+  # The firewall pipeline and shared infrastructure: remove each pin once its
+  # cross-repo contract tests have been running for a while.
+  nftables:
+    config: {ruleset: {required_status_checks: {strict: true}}}
+  scripts:
+    config: {ruleset: {required_status_checks: {strict: true}}}
+  server-config:
+    config: {ruleset: {required_status_checks: {strict: true}}}
+
   # The shared-workflows repo runs its own workflows directly, not through
   # the reusable-workflow caller jobs, so its check names have no
   # "<job> / " prefix.
@@ -34,6 +59,7 @@ repos:
     config:
       ruleset:
         required_status_checks:
+          strict: true
           checks:
             "pre-commit / pre-commit": null
             "ci-cd / Run Test Suite": null

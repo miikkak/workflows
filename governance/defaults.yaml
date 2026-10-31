@@ -9,7 +9,8 @@ settings:
   allow_squash_merge: true
   allow_merge_commit: false
   allow_rebase_merge: false
-  allow_update_branch: false
+  # Shows the "Update branch" button on a PR that is behind main.
+  allow_update_branch: true
   delete_branch_on_merge: true
   squash_merge_commit_title: COMMIT_OR_PR_TITLE
   squash_merge_commit_message: COMMIT_MESSAGES
@@ -80,7 +81,12 @@ ruleset:
     require_extra_approval_for_unattributed_changes: true
     allowed_merge_methods: [squash]
   required_status_checks:
-    strict: true
+    # strict=true makes every merge turn all other open PRs BEHIND, forcing a
+    # rebase plus a full CI and AI-review rerun on each of them. It is only
+    # worth that where two PRs can pass CI alone and still break main together,
+    # so repos whose main-branch tests would not catch such a combination pin
+    # strict: true in repos.yaml; everything else relaxes it.
+    strict: false
     do_not_enforce_on_create: false
     checks:
       "pre-commit / pre-commit": {integration_id: 15368}
