@@ -1,0 +1,34 @@
+---
+name: Main Failure Alert (self)
+
+# This repo defines main-failure-alert.yml as a reusable workflow_call for
+# consumer repos, so it cannot also own the `workflow_run` trigger under the
+# same file name. This wrapper is the equivalent of every consumer repo's
+# main-failure-alert.yml, calling the shared definition via a relative path
+# (see self-ci.yml -> ci-cd.yml for the same pattern).
+#
+# Never add "Main Failure Alert (self)" (this workflow) to the list or drop the
+# filter: each completed run would trigger itself again, an endless loop.
+# Tag-triggered workflows are not covered: their runs carry the tag as
+# head_branch, not main. The names must match the `name:` of this repo's own
+# workflows.
+on: # yamllint disable-line rule:truthy
+  workflow_run:
+    workflows:
+      - Cache Cleanup
+      - Lint
+      - PR Check
+      - Pre-commit Hook Updates
+      - Scheduled Security Scan
+      - Secret Scan
+    types: [completed]
+    branches: [main]
+
+permissions:
+  contents: read
+  actions: read
+  issues: write
+
+jobs:
+  alert:
+    uses: ./.github/workflows/main-failure-alert.yml
