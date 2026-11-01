@@ -61,7 +61,14 @@ jobs:
             const run = context.payload.workflow_run;
             const { owner, repo } = context.repo;
             const label = 'ci-failure';
-            const title = `CI failing on ${run.head_branch}: ${run.name}`;
+            // Names are user-controlled text. Markdown (links, code spans) needs
+            // brackets and backticks neutralised, so use plain() there. An issue
+            // title is plain text: only line breaks are collapsed, which keeps it
+            // the exact workflow name (so "Build [prod]" and "Build 'prod'" stay
+            // distinct) and doubles as the lookup key.
+            const plain = s => String(s).replace(/[\r\n]+/g, ' ').replace(/[\[\]`]/g, "'");
+            const name = plain(run.name);
+            const title = `CI failing on ${run.head_branch}: ${String(run.name).replace(/[\r\n]+/g, ' ')}`;
             const failedConclusions = new Set(['failure', 'timed_out', 'startup_failure']);
             const actionable = c => c === 'success' || failedConclusions.has(c);
             const sha = run.head_sha.slice(0, 7);
@@ -77,6 +84,21 @@ jobs:
             });
             const existing = open.find(i => i.title === title && !i.pull_request);
 
+            // Durable ordering that cannot move backward: the issue body records the
+            // newest failing run it was written for. A stale listWorkflowRuns result
+            // can then neither let an older success close the issue of a newer
+            // failure, nor let an older failure overwrite a newer one. An issue
+            // without the marker (hand-edited, or from before it existed) is not
+            // constrained.
+            const marker = /<!-- main-failure-alert: run=(\d+) attempt=(\d+) -->/
+              .exec((existing && existing.body) || '');
+            const recordedRun = marker ? Number(marker[1]) : null;
+            const recordedAttempt = marker ? Number(marker[2]) : null;
+            const newerThanRecorded = !marker || run.id > recordedRun ||
+              (run.id === recordedRun && run.run_attempt > recordedAttempt);
+            const notOlderThanRecorded = !marker || newerThanRecorded ||
+              (run.id === recordedRun && run.run_attempt === recordedAttempt);
+
             // Runs can finish out of order. Only act on this run if it is still
             // the newest actionable completed run of its workflow on this branch;
             // otherwise a late success could close an issue for a newer,
@@ -86,7 +108,9 @@ jobs:
             //  - pull request runs (a fork PR from a branch called "main" has
             //    head_branch "main"; pull_request_target runs on the default branch),
             //  - cancelled/skipped/neutral runs, which say nothing about health.
-            // A re-run keeps the run id and raises run_attempt, so compare both.
+            // Run ids only grow, so "newer" means a larger id; a run that is merely
+            // missing from the (eventually consistent) listing is not newer. A
+            // re-run keeps the run id and raises run_attempt, so compare that too.
             const recent = await github.rest.actions.listWorkflowRuns({
               owner, repo, workflow_id: run.workflow_id, branch: run.head_branch,
               status: 'completed', per_page: 100,
@@ -94,7 +118,8 @@ jobs:
             const latest = recent.data.workflow_runs.find(r =>
               r.event !== 'pull_request' && r.event !== 'pull_request_target' &&
               actionable(r.conclusion));
-            if (latest && (latest.id !== run.id || latest.run_attempt > run.run_attempt)) {
+            if (latest && (latest.id > run.id ||
+                (latest.id === run.id && latest.run_attempt > run.run_attempt))) {
               console.log(`ℹ️ run ${run.id} (attempt ${run.run_attempt}) is superseded by ` +
                 `run ${latest.id} (attempt ${latest.run_attempt}); not touching the issue`);
               return;
@@ -102,7 +127,12 @@ jobs:
 
             if (run.conclusion === 'success') {
               if (!existing) {
-                console.log(`✅ ${run.name} passing, no open issue`);
+                console.log(`✅ ${name} passing, no open issue`);
+                return;
+              }
+              if (!newerThanRecorded) {
+                console.log(`ℹ️ run ${run.id} is not newer than the failing run ${recordedRun} ` +
+                  `recorded in #${existing.number}; leaving it open`);
                 return;
               }
               await github.rest.issues.createComment({
@@ -120,9 +150,6 @@ jobs:
             const jobs = await github.paginate(github.rest.actions.listJobsForWorkflowRun, {
               owner, repo, run_id: run.id, per_page: 100,
             });
-            // Job and step names are user-controlled text: strip characters that
-            // would break the Markdown link or code span, and any line breaks.
-            const plain = s => String(s).replace(/[\r\n]+/g, ' ').replace(/[\[\]`]/g, "'");
             const failedJobs = jobs
               .filter(j => ['failure', 'timed_out'].includes(j.conclusion))
               .map(j => {
@@ -131,12 +158,15 @@ jobs:
               });
 
             // Subject line only, in code formatting: no @mentions, no markdown.
-            const subject = ((run.head_commit && run.head_commit.message) || '')
-              .split('\n')[0].replace(/`/g, "'").slice(0, 120);
+            // Handles CRLF messages and drops control characters; truncates by
+            // code point so an emoji is never cut in half.
+            const subject = Array.from(((run.head_commit && run.head_commit.message) || '')
+              .split(/\r?\n/)[0].replace(/[\u0000-\u001f]/g, ' ').replace(/`/g, "'"))
+              .slice(0, 120).join('');
             const commitUrl = `${context.serverUrl}/${owner}/${repo}/commit/${run.head_sha}`;
 
             const body = [
-              `## ❌ ${run.name} is failing on \`${run.head_branch}\``,
+              `## ❌ ${name} is failing on \`${run.head_branch}\``,
               '',
               `Latest failing run: ${run.html_url}`,
               '',
@@ -154,15 +184,44 @@ jobs:
               '',
               '---',
               '*Created automatically by the main-failure-alert workflow.*',
+              `<!-- main-failure-alert: run=${run.id} attempt=${run.run_attempt} -->`,
             ].join('\n');
 
             if (existing) {
+              if (!notOlderThanRecorded) {
+                console.log(`ℹ️ run ${run.id} is older than the failing run ${recordedRun} ` +
+                  `recorded in #${existing.number}; not overwriting it`);
+                return;
+              }
               await github.rest.issues.update({
                 owner, repo, issue_number: existing.number, body,
               });
               console.log(`📝 Updated #${existing.number}`);
               return;
             }
+            // The lookup above filters by label, so the labels must really exist:
+            // issue creation can silently drop a label that is missing, which
+            // would leave the issue unlabelled, unfindable on the next failure
+            // (duplicates) and impossible to auto-close. Look first (one cheap GET
+            // in the normal case); create only when it is missing. A 422 on create
+            // can mean another run just created it, so confirm it is really there
+            // before moving on instead of assuming.
+            const ensureLabel = async (labelName, color, description) => {
+              try {
+                await github.rest.issues.getLabel({ owner, repo, name: labelName });
+                return;
+              } catch (e) {
+                if (e.status !== 404) throw e;
+              }
+              try {
+                await github.rest.issues.createLabel({ owner, repo, name: labelName, color, description });
+              } catch (e) {
+                if (e.status !== 422) throw e;
+                await github.rest.issues.getLabel({ owner, repo, name: labelName });
+              }
+            };
+            await ensureLabel(label, 'b60205', 'A workflow is failing on the default branch');
+            await ensureLabel('automated', 'ededed', 'Created by an automated workflow');
             const created = await github.rest.issues.create({
               owner, repo, title, body, labels: [label, 'automated'],
             });

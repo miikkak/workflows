@@ -150,10 +150,13 @@ succeeds the workflow comments and closes the issue. Cancelled and skipped runs 
 Consumers add one thin `workflow_run` caller. The `branches` filter must be the repo's default
 branch (the reusable workflow only acts on the default branch, so a different filter would make
 it silent). The workflow names must match the `name:` of the repo's own workflows (names that do
-not exist in a repo are harmless). Do not list the alert
-workflow itself, and list only workflows that run on `main` (push or schedule); the caller needs
-`issues: write` and `actions: read` because a reusable workflow cannot exceed the caller's
-permissions:
+not exist in a repo are harmless). Never list the alert workflow itself (or drop the `workflows`
+filter): each completed run of the caller would trigger the caller again, an endless loop. List only
+workflows that run on `main` (push or schedule). Workflows triggered by a tag push, such as a
+`Release & Deploy` that runs on `push: tags`, are out of scope: their runs carry the tag as
+`head_branch`, are skipped by the default-branch guard, and a per-tag issue could never auto-close.
+The caller needs `issues: write` and `actions: read` because a reusable workflow cannot exceed the
+caller's permissions:
 
 ```yaml
 name: Main Failure Alert
@@ -163,7 +166,6 @@ on:
     workflows:
       - Lint
       - Post-Merge Pipeline
-      - Release & Deploy
       - Scheduled Security Scan
       - Secret Scan
       - Pre-commit Hook Updates
