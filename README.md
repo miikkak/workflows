@@ -41,28 +41,29 @@ Only add a `secrets:` block if the workflow you're calling actually declares one
 
 ## Reusable workflows
 
-| Workflow                      | Purpose                                                                             |
-| ----------------------------- | ----------------------------------------------------------------------------------- |
-| `pr-check.yml`                | Pre-commit hooks on every PR, with fork-PR runner isolation                         |
-| `ci-cd.yml`                   | PR validation: changed-files detection, test suite, optional Docker Buildx          |
-| `cd.yml`                      | Post-merge pipeline: `semantic-release` versioning/tagging driven by release labels |
-| `code-review.yml`             | AI code review with a configurable model fallback chain                             |
-| `security-scan.yml`           | Scheduled Trivy/govulncheck-based dependency vulnerability scanning                 |
-| `secret-scan.yml`             | gitleaks secret scanning: PR range (merge gate), push range, scheduled full history |
-| `super-linter.yml`            | `super-linter`-based multi-language linting                                         |
-| `release-label.yml`           | Enforces a `release:major`/`release:minor`/`release:patch`/`release:none` label     |
-| `check-release-label.yml`     | Lighter-weight release-label presence check for other workflows to depend on        |
-| `release-deploy.yml`          | Deploys a release to configured target servers over SSH                             |
-| `release-tarball.yml`         | Builds and attaches a release tarball to a GitHub Release                           |
-| `release-go.yml`              | Tests, cross-builds (`-trimpath`), archives and releases a Go binary                |
-| `dependabot-automerge.yml`    | Auto-approves and merges eligible Dependabot PRs                                    |
-| `gradle-lockfile-refresh.yml` | Regenerates a stale `gradle.lockfile` on PRs that need it                           |
-| `cache-cleanup.yml`           | Prunes stale GitHub Actions caches on a schedule                                    |
-| `precommit-updates.yml`       | Opens a PR when pinned pre-commit hook revisions have updates available             |
-| `dependency-check.yml`        | Polls for upstream releases/security fixes not covered by Renovate/Dependabot       |
-| `trigger-package-rebuild.yml` | Opens a rebuild PR to pick up Alpine `apk` security updates in a container image    |
-| `validate-tag.yml`            | Validates a manually-pushed tag matches the expected format before release          |
-| `sync-to-server-config.yml`   | Mirrors specific files from a source repo into my private `server-config` repo      |
+| Workflow                      | Purpose                                                                              |
+| ----------------------------- | ------------------------------------------------------------------------------------ |
+| `pr-check.yml`                | Pre-commit hooks on every PR, with fork-PR runner isolation                          |
+| `ci-cd.yml`                   | PR validation: changed-files detection, test suite, optional Docker Buildx           |
+| `cd.yml`                      | Post-merge pipeline: `semantic-release` versioning/tagging driven by release labels  |
+| `code-review.yml`             | AI code review with a configurable model fallback chain                              |
+| `security-scan.yml`           | Scheduled Trivy/govulncheck-based dependency vulnerability scanning                  |
+| `secret-scan.yml`             | gitleaks secret scanning: PR range (merge gate), push range, scheduled full history  |
+| `super-linter.yml`            | `super-linter`-based multi-language linting                                          |
+| `release-label.yml`           | Enforces a `release:major`/`release:minor`/`release:patch`/`release:none` label      |
+| `check-release-label.yml`     | Lighter-weight release-label presence check for other workflows to depend on         |
+| `release-deploy.yml`          | Deploys a release to configured target servers over SSH                              |
+| `release-tarball.yml`         | Builds and attaches a release tarball to a GitHub Release                            |
+| `release-go.yml`              | Tests, cross-builds (`-trimpath`), archives and releases a Go binary                 |
+| `dependabot-automerge.yml`    | Auto-approves and merges eligible Dependabot PRs                                     |
+| `gradle-lockfile-refresh.yml` | Regenerates a stale `gradle.lockfile` on PRs that need it                            |
+| `cache-cleanup.yml`           | Prunes stale GitHub Actions caches on a schedule                                     |
+| `main-failure-alert.yml`      | Opens an issue when a workflow fails on the default branch, closes it when it passes |
+| `precommit-updates.yml`       | Opens a PR when pinned pre-commit hook revisions have updates available              |
+| `dependency-check.yml`        | Polls for upstream releases/security fixes not covered by Renovate/Dependabot        |
+| `trigger-package-rebuild.yml` | Opens a rebuild PR to pick up Alpine `apk` security updates in a container image     |
+| `validate-tag.yml`            | Validates a manually-pushed tag matches the expected format before release           |
+| `sync-to-server-config.yml`   | Mirrors specific files from a source repo into my private `server-config` repo       |
 
 `self-ci.yml` and `self-verify-toolchains.yml` are this repo's _own_ CI. They run on PRs against
 `main` (`self-verify-toolchains.yml` only when `security-scan.yml`/`release-tarball.yml` change)
@@ -136,6 +137,50 @@ Findings are redacted; any hit means the credential must be rotated. False posit
 repo-level `.gitleaksignore` (fingerprints) or `.gitleaks.toml` (`[extend] useDefault = true`
 plus an allowlist) - gitleaks picks both up from the repo root, so there's no shared config to
 drift.
+
+## Alerting on a failing main
+
+A red check on `main` blocks nothing (it is not required on the PRs that follow), so without an
+alert it is only noticed by reading Actions logs. `main-failure-alert.yml` closes that gap: when a
+listed workflow completes on the default branch it opens one issue per failing workflow, titled
+`CI failing on main: <workflow>` and labelled `ci-failure`. While the workflow keeps failing the
+issue body is updated to point at the latest run (no new notification per run); when it next
+succeeds the workflow comments and closes the issue. Cancelled and skipped runs are ignored.
+
+Consumers add one thin `workflow_run` caller. The workflow names must match the `name:` of the
+repo's own workflows (names that do not exist in a repo are harmless). Do not list the alert
+workflow itself, and list only workflows that run on `main` (push or schedule); the caller needs
+`issues: write` and `actions: read` because a reusable workflow cannot exceed the caller's
+permissions:
+
+```yaml
+name: Main Failure Alert
+
+on:
+  workflow_run:
+    workflows:
+      - Lint
+      - Post-Merge Pipeline
+      - Release & Deploy
+      - Scheduled Security Scan
+      - Secret Scan
+      - Pre-commit Hook Updates
+      - Cache Cleanup
+    types: [completed]
+    branches: [main]
+
+permissions:
+  contents: read
+  actions: read
+  issues: write
+
+jobs:
+  alert:
+    uses: miikkak/workflows/.github/workflows/main-failure-alert.yml@<sha> # main
+```
+
+A `workflow_run` workflow only fires once its file is on the default branch, so it cannot be tested
+from a PR branch.
 
 ## Design notes
 

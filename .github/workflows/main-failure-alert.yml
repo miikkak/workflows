@@ -1,0 +1,138 @@
+# Opens an issue when a workflow fails on the default branch, and closes it
+# again when that workflow next succeeds there.
+#
+# Why: a red check on main blocks nothing (it is not a required check on the
+# PRs that follow), so it was only ever noticed by reading Actions logs. A
+# failing Super-Linter on main went unnoticed for days that way.
+#
+# How: called from a small `workflow_run` workflow in each repo (see the
+# README). One open issue per failing workflow, titled
+# "CI failing on <branch>: <workflow>", labelled `ci-failure`. A repeated
+# failure edits that issue's body to point at the latest run (no new
+# notification per run); a later success comments and closes it.
+#
+# Deliberately a single self-contained job: no nested reusable-workflow calls
+# back into this repo (see self-verify-toolchains.yml for why).
+name: Main Failure Alert
+
+on: # yamllint disable-line rule:truthy
+  workflow_call:
+    inputs:
+      runner:
+        description: Runner labels as a JSON array string (e.g. '["self-hosted","linux","generic"]')
+        type: string
+        default: '["self-hosted","linux","generic"]'
+
+# One job at a time per alerting workflow, so two runs finishing together
+# cannot both create the same issue. Never cancel: a skipped run could be the
+# one that closes (or opens) the issue.
+concurrency:
+  group: main-failure-alert-${{ github.event.workflow_run.name }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  alert:
+    name: Main Failure Alert
+    runs-on: ${{ fromJson(inputs.runner || '["self-hosted","linux","generic"]') }}
+    timeout-minutes: 5
+    # Only completed runs on the default branch that were not started by a
+    # pull request. The caller already filters branches; this keeps the
+    # workflow safe if a caller forgets to.
+    if: >-
+      github.event_name == 'workflow_run'
+      && github.event.workflow_run.head_branch == github.event.repository.default_branch
+      && github.event.workflow_run.event != 'pull_request'
+    permissions:
+      contents: read
+      actions: read
+      issues: write
+    steps:
+      - name: Open, update or close the failure issue
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9
+        with:
+          script: |
+            const run = context.payload.workflow_run;
+            const { owner, repo } = context.repo;
+            const label = 'ci-failure';
+            const title = `CI failing on ${run.head_branch}: ${run.name}`;
+            const failedConclusions = new Set(['failure', 'timed_out', 'startup_failure']);
+            const sha = run.head_sha.slice(0, 7);
+
+            const open = await github.paginate(github.rest.issues.listForRepo, {
+              owner, repo, labels: label, state: 'open', per_page: 100,
+            });
+            const existing = open.find(i => i.title === title && !i.pull_request);
+
+            if (run.conclusion === 'success') {
+              if (!existing) {
+                console.log(`✅ ${run.name} passing, no open issue`);
+                return;
+              }
+              await github.rest.issues.createComment({
+                owner, repo, issue_number: existing.number,
+                body: `✅ Passing again: ${run.html_url} (\`${sha}\`). Closing.`,
+              });
+              await github.rest.issues.update({
+                owner, repo, issue_number: existing.number,
+                state: 'closed', state_reason: 'completed',
+              });
+              console.log(`✅ Closed #${existing.number}`);
+              return;
+            }
+
+            if (!failedConclusions.has(run.conclusion)) {
+              // cancelled, skipped, neutral, ...: says nothing about health.
+              console.log(`ℹ️ ignoring conclusion "${run.conclusion}"`);
+              return;
+            }
+
+            const jobs = await github.paginate(github.rest.actions.listJobsForWorkflowRun, {
+              owner, repo, run_id: run.id, per_page: 100,
+            });
+            const failedJobs = jobs
+              .filter(j => ['failure', 'timed_out'].includes(j.conclusion))
+              .map(j => {
+                const step = (j.steps || []).find(s => s.conclusion === 'failure');
+                return `- [${j.name}](${j.html_url})` + (step ? ` — step \`${step.name}\`` : '');
+              });
+
+            // Subject line only, in code formatting: no @mentions, no markdown.
+            const subject = ((run.head_commit && run.head_commit.message) || '')
+              .split('\n')[0].replace(/`/g, "'").slice(0, 120);
+            const commitUrl = `${context.serverUrl}/${owner}/${repo}/commit/${run.head_sha}`;
+
+            const body = [
+              `## ❌ ${run.name} is failing on \`${run.head_branch}\``,
+              '',
+              `Latest failing run: ${run.html_url}`,
+              '',
+              `- **Commit:** [\`${sha}\`](${commitUrl})` + (subject ? ` \`${subject}\`` : ''),
+              `- **Trigger:** ${run.event}`,
+              `- **Conclusion:** ${run.conclusion}`,
+              `- **Seen:** ${new Date().toISOString()}`,
+              '',
+              '### Failed jobs',
+              '',
+              ...(failedJobs.length ? failedJobs : ['_No failed job reported; see the run._']),
+              '',
+              'This issue is updated while the workflow keeps failing and closes ' +
+                'itself when it next succeeds on this branch.',
+              '',
+              '---',
+              '*Created automatically by the main-failure-alert workflow.*',
+            ].join('\n');
+
+            if (existing) {
+              await github.rest.issues.update({
+                owner, repo, issue_number: existing.number, body,
+              });
+              console.log(`📝 Updated #${existing.number}`);
+              return;
+            }
+            const created = await github.rest.issues.create({
+              owner, repo, title, body, labels: [label, 'automated'],
+            });
+            console.log(`📝 Created #${created.data.number}`);
