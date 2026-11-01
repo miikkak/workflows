@@ -136,9 +136,11 @@ jobs:
               });
 
             // Subject line only, in code formatting: no @mentions, no markdown.
-            // Handles CRLF messages and drops control characters.
-            const subject = ((run.head_commit && run.head_commit.message) || '')
-              .split(/\r?\n/)[0].replace(/[\u0000-\u001f]/g, ' ').replace(/`/g, "'").slice(0, 120);
+            // Handles CRLF messages and drops control characters; truncates by
+            // code point so an emoji is never cut in half.
+            const subject = Array.from(((run.head_commit && run.head_commit.message) || '')
+              .split(/\r?\n/)[0].replace(/[\u0000-\u001f]/g, ' ').replace(/`/g, "'"))
+              .slice(0, 120).join('');
             const commitUrl = `${context.serverUrl}/${owner}/${repo}/commit/${run.head_sha}`;
 
             const body = [
@@ -172,10 +174,17 @@ jobs:
             // The lookup above filters by label, so the labels must really exist:
             // issue creation can silently drop a label that is missing, which
             // would leave the issue unlabelled, unfindable on the next failure
-            // (duplicates) and impossible to auto-close. A 422 normally means
-            // "already exists", but anything else that is a 422 would hide the
-            // problem, so confirm the label is really there before moving on.
+            // (duplicates) and impossible to auto-close. Look first (one cheap GET
+            // in the normal case); create only when it is missing. A 422 on create
+            // can mean another run just created it, so confirm it is really there
+            // before moving on instead of assuming.
             const ensureLabel = async (labelName, color, description) => {
+              try {
+                await github.rest.issues.getLabel({ owner, repo, name: labelName });
+                return;
+              } catch (e) {
+                if (e.status !== 404) throw e;
+              }
               try {
                 await github.rest.issues.createLabel({ owner, repo, name: labelName, color, description });
               } catch (e) {
