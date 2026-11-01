@@ -147,8 +147,10 @@ listed workflow completes on the default branch it opens one issue per failing w
 issue body is updated to point at the latest run (no new notification per run); when it next
 succeeds the workflow comments and closes the issue. Cancelled and skipped runs are ignored.
 
-Consumers add one thin `workflow_run` caller. The workflow names must match the `name:` of the
-repo's own workflows (names that do not exist in a repo are harmless). Do not list the alert
+Consumers add one thin `workflow_run` caller. The `branches` filter must be the repo's default
+branch (the reusable workflow only acts on the default branch, so a different filter would make
+it silent). The workflow names must match the `name:` of the repo's own workflows (names that do
+not exist in a repo are harmless). Do not list the alert
 workflow itself, and list only workflows that run on `main` (push or schedule); the caller needs
 `issues: write` and `actions: read` because a reusable workflow cannot exceed the caller's
 permissions:

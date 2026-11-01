@@ -23,9 +23,11 @@ on: # yamllint disable-line rule:truthy
         type: string
         default: '["self-hosted","linux","generic"]'
 
-# One job at a time per alerting workflow, so two runs finishing together
-# cannot both create the same issue. Never cancel: a skipped run could be the
-# one that closes (or opens) the issue.
+# One alert job at a time per workflow, so two runs finishing together do not
+# both create the same issue. Never cancel a running alert job (it could stop
+# halfway through an issue update). GitHub may drop an older pending completion
+# in favour of a newer one; that is harmless because the script only acts when
+# the completed run is still the newest run of its workflow on the branch.
 concurrency:
   group: main-failure-alert-${{ github.event.workflow_run.name }}
   cancel-in-progress: false
@@ -66,6 +68,21 @@ jobs:
             });
             const existing = open.find(i => i.title === title && !i.pull_request);
 
+            // Runs can finish out of order. Only act on this run if it is still
+            // the newest completed run of its workflow on this branch; otherwise
+            // a late success could close an issue for a newer, still-failing commit
+            // (or a late failure could reopen one for a newer, green commit). The
+            // newer run's own completion will update the issue instead.
+            const newest = await github.rest.actions.listWorkflowRuns({
+              owner, repo, workflow_id: run.workflow_id, branch: run.head_branch,
+              status: 'completed', per_page: 1,
+            });
+            const latest = newest.data.workflow_runs[0];
+            if (latest && latest.id !== run.id) {
+              console.log(`ℹ️ run ${run.id} is superseded by newer completed run ${latest.id}; not touching the issue`);
+              return;
+            }
+
             if (run.conclusion === 'success') {
               if (!existing) {
                 console.log(`✅ ${run.name} passing, no open issue`);
@@ -92,11 +109,14 @@ jobs:
             const jobs = await github.paginate(github.rest.actions.listJobsForWorkflowRun, {
               owner, repo, run_id: run.id, per_page: 100,
             });
+            // Job and step names are user-controlled text: strip characters that
+            // would break the Markdown link or code span, and any line breaks.
+            const plain = s => String(s).replace(/[\r\n]+/g, ' ').replace(/[\[\]`]/g, "'");
             const failedJobs = jobs
               .filter(j => ['failure', 'timed_out'].includes(j.conclusion))
               .map(j => {
                 const step = (j.steps || []).find(s => s.conclusion === 'failure');
-                return `- [${j.name}](${j.html_url})` + (step ? ` — step \`${step.name}\`` : '');
+                return `- [${plain(j.name)}](${j.html_url})` + (step ? ` — step \`${plain(step.name)}\`` : '');
               });
 
             // Subject line only, in code formatting: no @mentions, no markdown.
