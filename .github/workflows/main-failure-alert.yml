@@ -61,12 +61,14 @@ jobs:
             const run = context.payload.workflow_run;
             const { owner, repo } = context.repo;
             const label = 'ci-failure';
-            // Names are user-controlled text: strip characters that would break
-            // a Markdown link or code span, and any line breaks. The workflow name
-            // is used for the title and the lookup, so both stay consistent.
+            // Names are user-controlled text. Markdown (links, code spans) needs
+            // brackets and backticks neutralised, so use plain() there. An issue
+            // title is plain text: only line breaks are collapsed, which keeps it
+            // the exact workflow name (so "Build [prod]" and "Build 'prod'" stay
+            // distinct) and doubles as the lookup key.
             const plain = s => String(s).replace(/[\r\n]+/g, ' ').replace(/[\[\]`]/g, "'");
             const name = plain(run.name);
-            const title = `CI failing on ${run.head_branch}: ${name}`;
+            const title = `CI failing on ${run.head_branch}: ${String(run.name).replace(/[\r\n]+/g, ' ')}`;
             const failedConclusions = new Set(['failure', 'timed_out', 'startup_failure']);
             const actionable = c => c === 'success' || failedConclusions.has(c);
             const sha = run.head_sha.slice(0, 7);
@@ -81,6 +83,21 @@ jobs:
               owner, repo, labels: label, state: 'open', per_page: 100,
             });
             const existing = open.find(i => i.title === title && !i.pull_request);
+
+            // Durable ordering that cannot move backward: the issue body records the
+            // newest failing run it was written for. A stale listWorkflowRuns result
+            // can then neither let an older success close the issue of a newer
+            // failure, nor let an older failure overwrite a newer one. An issue
+            // without the marker (hand-edited, or from before it existed) is not
+            // constrained.
+            const marker = /<!-- main-failure-alert: run=(\d+) attempt=(\d+) -->/
+              .exec((existing && existing.body) || '');
+            const recordedRun = marker ? Number(marker[1]) : null;
+            const recordedAttempt = marker ? Number(marker[2]) : null;
+            const newerThanRecorded = !marker || run.id > recordedRun ||
+              (run.id === recordedRun && run.run_attempt > recordedAttempt);
+            const notOlderThanRecorded = !marker || newerThanRecorded ||
+              (run.id === recordedRun && run.run_attempt === recordedAttempt);
 
             // Runs can finish out of order. Only act on this run if it is still
             // the newest actionable completed run of its workflow on this branch;
@@ -111,6 +128,11 @@ jobs:
             if (run.conclusion === 'success') {
               if (!existing) {
                 console.log(`✅ ${name} passing, no open issue`);
+                return;
+              }
+              if (!newerThanRecorded) {
+                console.log(`ℹ️ run ${run.id} is not newer than the failing run ${recordedRun} ` +
+                  `recorded in #${existing.number}; leaving it open`);
                 return;
               }
               await github.rest.issues.createComment({
@@ -162,9 +184,15 @@ jobs:
               '',
               '---',
               '*Created automatically by the main-failure-alert workflow.*',
+              `<!-- main-failure-alert: run=${run.id} attempt=${run.run_attempt} -->`,
             ].join('\n');
 
             if (existing) {
+              if (!notOlderThanRecorded) {
+                console.log(`ℹ️ run ${run.id} is older than the failing run ${recordedRun} ` +
+                  `recorded in #${existing.number}; not overwriting it`);
+                return;
+              }
               await github.rest.issues.update({
                 owner, repo, issue_number: existing.number, body,
               });
