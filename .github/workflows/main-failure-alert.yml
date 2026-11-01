@@ -42,11 +42,13 @@ jobs:
     timeout-minutes: 5
     # Only completed runs on the default branch that were not started by a
     # pull request. The caller already filters branches; this keeps the
-    # workflow safe if a caller forgets to.
+    # workflow safe if a caller forgets to. pull_request_target runs execute
+    # in the default-branch context, so they must be excluded explicitly.
     if: >-
       github.event_name == 'workflow_run'
       && github.event.workflow_run.head_branch == github.event.repository.default_branch
       && github.event.workflow_run.event != 'pull_request'
+      && github.event.workflow_run.event != 'pull_request_target'
     permissions:
       contents: read
       actions: read
@@ -61,7 +63,14 @@ jobs:
             const label = 'ci-failure';
             const title = `CI failing on ${run.head_branch}: ${run.name}`;
             const failedConclusions = new Set(['failure', 'timed_out', 'startup_failure']);
+            const actionable = c => c === 'success' || failedConclusions.has(c);
             const sha = run.head_sha.slice(0, 7);
+
+            if (!actionable(run.conclusion)) {
+              // cancelled, skipped, neutral, ...: says nothing about health.
+              console.log(`ℹ️ ignoring conclusion "${run.conclusion}"`);
+              return;
+            }
 
             const open = await github.paginate(github.rest.issues.listForRepo, {
               owner, repo, labels: label, state: 'open', per_page: 100,
@@ -69,17 +78,25 @@ jobs:
             const existing = open.find(i => i.title === title && !i.pull_request);
 
             // Runs can finish out of order. Only act on this run if it is still
-            // the newest completed run of its workflow on this branch; otherwise
-            // a late success could close an issue for a newer, still-failing commit
-            // (or a late failure could reopen one for a newer, green commit). The
-            // newer run's own completion will update the issue instead.
-            const newest = await github.rest.actions.listWorkflowRuns({
+            // the newest actionable completed run of its workflow on this branch;
+            // otherwise a late success could close an issue for a newer,
+            // still-failing commit (or a late failure could reopen one for a
+            // newer, green commit). The newer run's own completion will update the
+            // issue instead. "Newest" looks past runs that must not count:
+            //  - pull request runs (a fork PR from a branch called "main" has
+            //    head_branch "main"; pull_request_target runs on the default branch),
+            //  - cancelled/skipped/neutral runs, which say nothing about health.
+            // A re-run keeps the run id and raises run_attempt, so compare both.
+            const recent = await github.rest.actions.listWorkflowRuns({
               owner, repo, workflow_id: run.workflow_id, branch: run.head_branch,
-              status: 'completed', per_page: 1,
+              status: 'completed', per_page: 100,
             });
-            const latest = newest.data.workflow_runs[0];
-            if (latest && latest.id !== run.id) {
-              console.log(`ℹ️ run ${run.id} is superseded by newer completed run ${latest.id}; not touching the issue`);
+            const latest = recent.data.workflow_runs.find(r =>
+              r.event !== 'pull_request' && r.event !== 'pull_request_target' &&
+              actionable(r.conclusion));
+            if (latest && (latest.id !== run.id || latest.run_attempt > run.run_attempt)) {
+              console.log(`ℹ️ run ${run.id} (attempt ${run.run_attempt}) is superseded by ` +
+                `run ${latest.id} (attempt ${latest.run_attempt}); not touching the issue`);
               return;
             }
 
@@ -97,12 +114,6 @@ jobs:
                 state: 'closed', state_reason: 'completed',
               });
               console.log(`✅ Closed #${existing.number}`);
-              return;
-            }
-
-            if (!failedConclusions.has(run.conclusion)) {
-              // cancelled, skipped, neutral, ...: says nothing about health.
-              console.log(`ℹ️ ignoring conclusion "${run.conclusion}"`);
               return;
             }
 
