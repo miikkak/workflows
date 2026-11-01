@@ -163,6 +163,18 @@ jobs:
               console.log(`📝 Updated #${existing.number}`);
               return;
             }
+            // The lookup above filters by label, so the label must really exist:
+            // issue creation can silently drop a label that is missing, which
+            // would leave the issue unlabelled, unfindable on the next failure
+            // (duplicates) and impossible to auto-close. 422 = already exists.
+            try {
+              await github.rest.issues.createLabel({
+                owner, repo, name: label, color: 'b60205',
+                description: 'A workflow is failing on the default branch',
+              });
+            } catch (e) {
+              if (e.status !== 422) throw e;
+            }
             const created = await github.rest.issues.create({
               owner, repo, title, body, labels: [label, 'automated'],
             });
